@@ -26,6 +26,7 @@ public sealed class PipelineSettings
     public float CurvatureSizing = 1; // sizing field: curvature term (equal-error spacing ∝ κ^-½)
     public float SizingGradient = 0.2f; // max growth of edge length per unit distance (smaller = gentler density changes)
     public float SizingMaxRatio = 6f;   // max ratio between coarsest and finest edge length
+    public bool FitVoxel = true;        // also least-squares fit the decimated voxel mesh to the dense surface
     public int VoxelRes = 256;      // voxel mode: cells on longest axis of the base mesh (same default detail as quad mode)
     public int Close = 1;           // gap-closing voxels
     public int RelaxIters = 4;
@@ -268,6 +269,12 @@ public sealed class Pipeline
             var mm = m;
             m = Timed("decimate", () => QemDecimator.Decimate(mm, targetTris, vw, maxEdge));
             L($"Decimated to {m.TriCount} tris");
+            if (QuadRetopo.FitToSurface && S.FitVoxel)
+            {
+                var dm = m;
+                var fs = Timed("surface fit", () => SurfaceFit.Fit(dm, BaseMesh));
+                L($"Surface fit: mean shift {fs.MeanShift:0.#####}, max {fs.MaxShift:0.#####}");
+            }
         }
         m.ComputeNormals();
         Welded = m;

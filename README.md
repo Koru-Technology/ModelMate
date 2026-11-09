@@ -103,31 +103,31 @@ JSON presets (`rigs/*.json` built in, user presets in Godot's `user://rigs`) sto
 
 What it shows on the test models (Lil gug, the A-pose humanoid and the lumpy humanoid, 1k–16k triangles):
 
-Average p99 error over the bone poses, % of model height (quad / voxel):
+Average p99 error over the bone poses, % of model height, defaults for both modes (quad: auto spacing; both: surface fit):
 
-| model | 1k: bending | 1k: total posed | 2k: bending | 2k: total posed | 8k: bending | 8k: total posed |
-|---|---|---|---|---|---|---|
-| Lil gug | **0.74** / 0.87 | 1.84 / **1.07** | **0.56** / 0.65 | 1.18 / **0.75** | **0.28** / 0.33 | 0.42 / **0.38** |
-| A-pose humanoid | **0.26** / 0.37 | **0.96** / 1.01 | **0.16** / 0.24 | 0.54 / **0.40** | **0.07** / 0.21 | 0.22 / 0.22 |
-| lumpy humanoid | **0.24** / 0.31 | 0.98 / **0.87** | **0.16** / 0.24 | 0.61 / **0.32** | **0.08** / 0.15 | 0.23 / **0.17** |
+| model | | 1k | 2k | 4k | 8k |
+|---|---|---|---|---|---|
+| A-pose humanoid | total posed (quad / voxel) | **0.63** / 0.68 | 0.35 / **0.32** | 0.24 / 0.24 | **0.16** / 0.21 |
+| | bending | **0.25** / 0.36 | **0.16** / 0.24 | **0.11** / 0.23 | **0.07** / 0.21 |
+| lumpy humanoid | total posed | **0.62** / 0.65 | 0.39 / **0.29** | 0.25 / **0.22** | 0.17 / **0.16** |
+| | bending | **0.26** / 0.32 | **0.17** / 0.24 | **0.11** / 0.20 | **0.09** / 0.15 |
+| Lil gug | total posed | 1.36 / **1.02** | 0.74 / 0.74 | **0.49** / 0.54 | 0.38 / 0.38 |
+| | bending | **0.80** / 0.92 | **0.62** / 0.69 | **0.44** / 0.52 | **0.36** / 0.36 |
 
-*Bending* is how much worse the mesh gets when posed; *total posed* is what a viewer sees in the pose (shape error plus bending). Normal (shading) error is also lower for voxel at every budget.
+*Bending* is how much worse the mesh gets when posed; *total posed* is what a viewer sees in the pose (shape error plus bending).
 
-- **Quad mode bends more cleanly** at every budget. Voxel's bending error stays high even at 16k because decimation leaves long slivers that span joints.
-- **Voxel mode matches the model better overall at ≤4k**, even counting bending, because decimation is curvature-adaptive: it spends triangles where the surface curves. Quad mode spaces edges uniformly, so at 1k a limb gets 4 sides (voxel: about 13 cross-section corners) while flat areas get more than they need.
-- So at mobile budgets neither mode wins outright with uniform spacing. Quad mode's weakness is *where* it spends triangles, not which way its edges run. That's what adaptive spacing (below) addresses.
+- **Quad mode bends more cleanly at every budget.** Voxel mode's bending error stays high even at 8k because decimation leaves long slivers that span joints.
+- **Overall they're close**: quad wins or ties in 7 of 12 cells. Voxel mode still matches shape better in a few (Lil gug at 1k, fine ridges at 2k–4k), because its long slivers follow ridges that roughly square quads can't.
+- Quad stays the default because it's the mode that animates cleanly; voxel mode is there when a static silhouette matters more.
+
+How quad mode got here, measured with the same report:
+1. **Uniform spacing** was worse at matching shape at mobile budgets (e.g. 1.19 vs voxel 0.75 total on Lil gug at 2k), because triangles were spread by area, not by need.
+2. **Adaptive spacing** (`--sizing auto`, below) spends more quads where the surface curves.
+3. **Surface fitting** (`SurfaceFit`, on by default in both modes, `--no-fit` to disable) moves vertices slightly off the surface along their normals so the faces fit the dense surface in a least-squares sense. A coarse mesh with every vertex *on* a curved surface has every face cutting inside it; balancing that roughly halves shape error. It took Lil gug at 2k from 0.86 to 0.74 in quad mode and the A-pose humanoid at 1k from 1.01 to 0.68 in voxel mode.
 
 (The report builds both modes from the same 256-cell base mesh, which is also the shipping default for both.)
 
-**Adaptive spacing** (quad mode, default `--sizing auto`). A sizing field gives each point of the surface a target edge length from its curvature (spacing ∝ κ^-½, the rule for constant chord error), limited to a 6× range and to gradual changes (≤ 0.2 per unit distance), and rescaled so the total meets the triangle budget (one recalibration pass if extraction misses it by more than 4%). `auto` builds both the uniform and the adaptive remesh from the same base mesh and keeps the one closer to the surface (99th-percentile deviation), so shape fidelity never gets worse; it costs one or two extra remesh passes. Total posed error (same report, % of height):
-
-| model | 1k: uniform / auto / voxel | 2k | 4k |
-|---|---|---|---|
-| Lil gug | **1.84** / 1.88 / 1.07 | 1.19 / **0.86** / 0.75 | 0.65 / **0.53** / 0.54 |
-| A-pose humanoid | 0.96 / **0.89** / 1.01 | 0.54 / **0.53** / 0.40 | 0.34 / **0.30** / 0.25 |
-| lumpy humanoid | 0.98 / 0.98 / 0.87 | 0.61 / **0.60** / 0.32 | 0.36 / **0.35** / 0.23 |
-
-Bending error and collapsed triangles stay at or below uniform; normal error improves. Adaptive spacing puts its triangles where density changes, so the quad share drops (83–94% at 1k–4k, vs 93–97% uniform). Voxel mode still matches fine ridges better at 2k (its anisotropic slivers follow them), at the cost of bending. A thickness term (`--adapt 0.5`) is available but measured as a wash next to curvature alone.
+**Adaptive spacing** (quad mode, default `--sizing auto`). A sizing field gives each point of the surface a target edge length from its curvature (spacing ∝ κ^-½, the rule for constant chord error), limited to a 6× range and to gradual changes (≤ 0.2 per unit distance), and rescaled so the total meets the triangle budget (one recalibration pass if extraction misses it by more than 4%). `auto` builds both the uniform and the adaptive remesh from the same base mesh and keeps the one closer to the surface (99th-percentile deviation), so shape fidelity never gets worse; it costs one or two extra remesh passes. Adaptive spacing puts its triangles where density changes, so the quad share drops (83–94% at 1k–4k, vs 93–97% uniform). A thickness term (`--adapt 0.5`) is available but measured as a wash next to curvature alone.
 
 **Skeleton-guided edge flow** (`--flow 0.7`, quad mode) pulls the field toward each region's bone axis, with extra weight at joints. Measured with the same report at 1k–4k triangles it didn't earn a place as the default: it cut collapsed triangles on the A-pose humanoid at 1k (1.2 → 0.7 per 1,000) but made total posed error slightly worse on Lil gug at every budget (by up to 8%) and on the lumpy humanoid at 1k and 4k. On these models the unguided field already runs along the limbs, so guidance mostly adds singularities. It stays available as an experimental CLI option.
 

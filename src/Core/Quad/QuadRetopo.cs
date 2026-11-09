@@ -78,6 +78,9 @@ public static class QuadRetopo
         return d[Math.Min(n - 1, (int)(0.99 * n))];
     }
 
+    /// <summary>Least-squares fit of the remesh to the dense surface after reprojection (see SurfaceFit).</summary>
+    public static bool FitToSurface = true;
+
     public static QuadResult Run(MeshData baseMesh, Bvh source, float rho, Vector3[] guideDir, float[] guideW,
         int seed, Action<string> log, float[] sizing = null)
     {
@@ -128,6 +131,11 @@ public static class QuadRetopo
         if (sizing != null) foreach (var x in sizing) snap = MathF.Max(snap, x);
         r.Reproject = Relax.Run(m, source, snap, 3, 0.1f, QuadStats.RealAdjacency(m));
         T("cleanup+reproject");
+        if (FitToSurface)
+        {
+            var fs = SurfaceFit.Fit(m, baseMesh);
+            T($"surface fit (mean shift {fs.MeanShift:0.#####}, max {fs.MaxShift:0.#####}, reverted {fs.Reverted})");
+        }
         r.Mesh = m;
         r.Stats = QuadStats.Compute(m);
         log?.Invoke($"  Quad mesh: {r.Stats}");

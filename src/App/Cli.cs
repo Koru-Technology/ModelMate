@@ -56,6 +56,8 @@ public static class Cli
             if (a.TryGetValue("sizing-grad", out v)) p.S.SizingGradient = float.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
             if (a.TryGetValue("sizing-ratio", out v)) p.S.SizingMaxRatio = float.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
             if (a.TryGetValue("sizing", out v)) p.S.Sizing = v;
+            if (a.ContainsKey("no-fit")) ModelMate.Core.Quad.QuadRetopo.FitToSurface = false;
+
             if (a.TryGetValue("curv", out v)) p.S.CurvatureSizing = float.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
             if (a.TryGetValue("adapt", out v)) p.S.Adaptivity = float.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
             if (a.TryGetValue("flow", out v)) p.S.FlowStrength = float.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
