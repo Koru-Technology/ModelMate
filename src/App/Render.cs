@@ -58,7 +58,9 @@ public static class Render
         if (wire) host.GetViewport().DebugDraw = Viewport.DebugDrawEnum.Wireframe;
 
         var center = aabb.GetCenter();
-        float r = aabb.Size.Length() * 0.62f;
+        // frame the largest extent within the 40° field of view (works for tall, wide or flat models), plus margin
+        float ext = System.MathF.Max(aabb.Size.X, System.MathF.Max(aabb.Size.Y, aabb.Size.Z));
+        float dist = 0.5f * ext / System.MathF.Tan(Mathf.DegToRad(20f)) * 1.1f + 0.5f * ext;
         var named = new System.Collections.Generic.Dictionary<string, Vector3>
         {
             ["front"] = Vector3.Back, ["side"] = Vector3.Right, ["back"] = Vector3.Forward,
@@ -72,7 +74,7 @@ public static class Render
         cam.MakeCurrent();
         for (int v = 0; v < dirs.Length; v++)
         {
-            cam.Position = center + dirs[v] * r * 1.6f;
+            cam.Position = center + dirs[v] * dist;
             var up = System.MathF.Abs(dirs[v].Y) > 0.9f ? Vector3.Back : Vector3.Up;
             cam.LookAt(center, up);
             for (int f = 0; f < 4; f++) await host.ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
