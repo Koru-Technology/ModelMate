@@ -18,7 +18,8 @@ public sealed class PipelineSettings
     /// surface for the normal-map bake and the fidelity reference.</summary>
     public int DetailRes = 256;
     public int Seed = 1;            // field initialization seed (deterministic results)
-    public int VoxelRes = 192;      // cells on longest axis for retopo
+    public float FlowStrength = 0;  // quad mode: skeleton guidance of edge flow (0 = off; experimental, see README)
+    public int VoxelRes = 256;      // voxel mode: cells on longest axis of the base mesh (same default detail as quad mode)
     public int Close = 1;           // gap-closing voxels
     public int RelaxIters = 4;
     public int WeightRes = 80;      // cells on longest axis for weights
@@ -181,7 +182,14 @@ public sealed class Pipeline
         if (clamped) rho = MathF.Max(rho, rhoFloor);
         L($"Quad spacing ρ = {rho:0.####} units (voxel H = {Grid.H:0.####}, H/ρ = {Grid.H / rho:0.00})");
 
-        Vector3[] gd = null; float[] gw = null;   // Q2: skeleton guidance
+        Vector3[] gd = null; float[] gw = null;
+        if (S.FlowStrength > 0 && Rig != null && Rig.Bones.Count > 1)
+        {
+            var (b4, w4, _, _) = SolveWeights(BaseMesh);
+            float r = rho;
+            (gd, gw) = Timed("flow guidance", () => FlowGuidance.Build(BaseMesh, Rig, b4, w4, r, S.FlowStrength));
+            L($"Flow guidance: strength {S.FlowStrength}");
+        }
         Quad = Timed("quad remesh", () => QuadRetopo.Run(BaseMesh, SourceBvh, rho, gd, gw, S.Seed, L));
         if (Quad.Failure != null) return Quad.Failure;
         Welded = Quad.Mesh;

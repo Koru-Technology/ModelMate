@@ -54,11 +54,12 @@ Camera: right-drag to orbit, Shift + right-drag to pan, mouse wheel or trackpad 
 
 ```sh
 $G --headless --path . -- --in model.glb --out model_rigged.glb \
-   [--retopo quad|voxel] [--tris 8000] [--detail 256] [--dump-quads layout.obj] [--seed 1] \
-   [--voxel 192] [--close 1] [--tex 1024] [--relax 4] [--falloff 3] \
+   [--retopo quad|voxel] [--tris 8000] [--detail 256] [--flow 0] [--dump-quads layout.obj] [--seed 1] \
+   [--voxel 256] [--close 1] [--tex 1024] [--relax 4] [--falloff 3] \
    [--rig humanoid|single|blob_biped|preset.json] [--save-rig out.json] \
    [--rotate-y 180] [--no-normal] [--no-joint-aware] [--probe-weights]
-$G --headless --path . -- --selftest-fields                      # quad remesher self-tests (sphere, off-axis capsule)
+$G --headless --path . -- --in model.glb --rig humanoid --deform-report <dir> [--budgets 1000,2000] [--modes quad,quadflow,voxel]
+$G --headless --path . -- --selftest-fields                      # quad remesher + rig editing self-tests
 $G --headless --path . -- --make-test-asset res://test [--dense] # procedural test humanoids (T-pose, open, A-pose, ~3.8M-tri dense)
 ./test/regress.sh                                                # runs every test model through the CLI, both modes
 ./test/sweep.sh                                                  # quality table across budgets (1k–16k triangles)
@@ -101,13 +102,23 @@ JSON presets (`rigs/*.json` built in, user presets in Godot's `user://rigs`) sto
 
 What it shows on the test models (Lil gug, the A-pose humanoid and the lumpy humanoid, 1k–16k triangles):
 
-| | quad mode | voxel + decimate |
-|---|---|---|
-| Bending error (how much worse the mesh gets when posed) | Lower at almost every budget on all three models, often by 1.5–4×. | Stays high even at 16k: decimation leaves long slivers that span joints. |
-| Shape before posing | Worse at 2k–8k: uniform density can't spend triangles where the surface curves. | Better: decimation is curvature-adaptive. |
-| Sides around a limb at 1k triangles | 4 | about 13 |
+Average p99 error over the bone poses, % of model height (quad / voxel):
 
-So quad mode's edge layout bends better, and its weakness at low budgets is *where* it spends triangles, not which way the edges run.
+| model | 1k: bending | 1k: total posed | 2k: bending | 2k: total posed | 8k: bending | 8k: total posed |
+|---|---|---|---|---|---|---|
+| Lil gug | **0.74** / 0.87 | 1.84 / **1.07** | **0.56** / 0.65 | 1.18 / **0.75** | **0.28** / 0.33 | 0.42 / **0.38** |
+| A-pose humanoid | **0.26** / 0.37 | **0.96** / 1.01 | **0.16** / 0.24 | 0.54 / **0.40** | **0.07** / 0.21 | 0.22 / 0.22 |
+| lumpy humanoid | **0.24** / 0.31 | 0.98 / **0.87** | **0.16** / 0.24 | 0.61 / **0.32** | **0.08** / 0.15 | 0.23 / **0.17** |
+
+*Bending* is how much worse the mesh gets when posed; *total posed* is what a viewer sees in the pose (shape error plus bending). Normal (shading) error is also lower for voxel at every budget.
+
+- **Quad mode bends more cleanly** at every budget. Voxel's bending error stays high even at 16k because decimation leaves long slivers that span joints.
+- **Voxel mode matches the model better overall at ≤4k**, even counting bending, because decimation is curvature-adaptive: it spends triangles where the surface curves. Quad mode spaces edges uniformly, so at 1k a limb gets 4 sides (voxel: about 13 cross-section corners) while flat areas get more than they need.
+- So at mobile budgets neither mode wins outright today. Quad mode's weakness is *where* it spends triangles, not which way its edges run.
+
+(The report builds both modes from the same 256-cell base mesh, which is also the shipping default for both.)
+
+**Skeleton-guided edge flow** (`--flow 0.7`, quad mode) pulls the field toward each region's bone axis, with extra weight at joints. Measured with the same report at 1k–4k triangles it didn't earn a place as the default: it cut collapsed triangles on the A-pose humanoid at 1k (1.2 → 0.7 per 1,000) but made total posed error slightly worse on Lil gug at every budget (by up to 8%) and on the lumpy humanoid at 1k and 4k. On these models the unguided field already runs along the limbs, so guidance mostly adds singularities. It stays available as an experimental CLI option.
 
 ## Checks run on export
 The mesh is manifold. UVs are in [0,1]. Weights sum to 1 with at most 4 bones per vertex. Seam vertices carry identical attributes. In voxel mode the triangle budget is met.

@@ -66,6 +66,7 @@ public static class DeformReport
             foreach (var b in budgets)
             {
                 p.S.Mode = mode == "voxel" ? RetopoMode.Voxel : RetopoMode.Quad;
+                p.S.FlowStrength = mode == "quadflow" ? 0.7f : 0f;   // quadflow = quad mode with skeleton guidance
                 p.S.TargetTris = b;
                 // Same starting surface for both modes: voxel mode would otherwise remesh from VoxelRes (192 by
                 // default), which can bridge narrow gaps (armpits) and confound the comparison.

@@ -22,7 +22,7 @@ row() {  # model rig mode tris
 }
 printf "%-16s %-6s %6s %4s %-4s %6s %6s %5s %7s %4s  %s\n" model mode tris exit fb quads% val4% sides outTris warn failed-checks
 for spec in "humanoid_apose:humanoid" "humanoid_lumpy:humanoid" "lil_gug:res://test/rigs/lil_gug.json"; do
-  model=${spec%%:*}; rig=${spec##*:}
+  model=${spec%%:*}; rig=${spec#*:}
   [[ -f test/$model.glb ]] || { echo "$model: skipped (test/$model.glb missing)"; continue; }
   for t in $BUDGETS; do row $model $rig quad $t; done
   for t in $VOXEL_BUDGETS; do row $model $rig voxel $t; done

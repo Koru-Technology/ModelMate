@@ -53,6 +53,7 @@ public static class Cli
             if (a.TryGetValue("quads", out v)) p.S.TargetTris = 2 * int.Parse(v);   // alias: quads = triangles / 2
             if (a.TryGetValue("detail", out v)) p.S.DetailRes = int.Parse(v);
             if (a.TryGetValue("seed", out v)) p.S.Seed = int.Parse(v);
+            if (a.TryGetValue("flow", out v)) p.S.FlowStrength = float.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
             if (a.TryGetValue("rotate-y", out v)) p.S.RotateY = float.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
             if (a.ContainsKey("no-joint-aware")) p.S.JointAware = false;
 

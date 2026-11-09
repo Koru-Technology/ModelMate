@@ -217,7 +217,7 @@ public partial class Main : Node3D
         _retopoMode = Option(vb, "Mode", new[] { "Quad (recommended)", "Voxel + decimate" });
         _retopoMode.ItemSelected += _ => UpdateVoxelInfo();
         _tris = Spin(vb, "Target triangles", 200, 200000, 8000, 100, _ => UpdateVoxelInfo());
-        _voxel = Spin(vb, "Voxel resolution (voxel mode)", 64, 384, 192, 16, _ => UpdateVoxelInfo());
+        _voxel = Spin(vb, "Voxel resolution (voxel mode)", 64, 512, 256, 16, _ => UpdateVoxelInfo());
         _voxelInfo = new Label { Modulate = new Color(1, 1, 1, 0.7f), AutowrapMode = TextServer.AutowrapMode.WordSmart, CustomMinimumSize = new Vector2(300, 0) };
         vb.AddChild(_voxelInfo);
         _close = Spin(vb, "Gap closing (voxels)", 0, 3, 1, 1);
