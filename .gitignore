@@ -1,0 +1,8 @@
+.godot/
+bin/
+obj/
+*.user
+*.import
+test/*.glb
+test/*.png
+test/*.obj
