@@ -19,6 +19,13 @@ public sealed class PipelineSettings
     public int DetailRes = 256;
     public int Seed = 1;            // field initialization seed (deterministic results)
     public float FlowStrength = 0;  // quad mode: skeleton guidance of edge flow (0 = off; experimental, see README)
+    /// <summary>Quad-mode spacing: "auto" (default: build uniform and adaptive, keep the better surface match),
+    /// "uniform" or "adaptive".</summary>
+    public string Sizing = "auto";
+    public float Adaptivity = 0;      // sizing field: thickness term (0 = off, 1 = spacing ∝ local thickness)
+    public float CurvatureSizing = 1; // sizing field: curvature term (equal-error spacing ∝ κ^-½)
+    public float SizingGradient = 0.2f; // max growth of edge length per unit distance (smaller = gentler density changes)
+    public float SizingMaxRatio = 6f;   // max ratio between coarsest and finest edge length
     public int VoxelRes = 256;      // voxel mode: cells on longest axis of the base mesh (same default detail as quad mode)
     public int Close = 1;           // gap-closing voxels
     public int RelaxIters = 4;
@@ -68,6 +75,7 @@ public sealed class Pipeline
     public QuadResult Quad;           // quad mode result (null in voxel mode)
     public bool UsedFallback;
     public string FallbackReason;
+    public string SizingChosen;       // quad mode: which spacing was used ("uniform" / "adaptive")
     /// <summary>Triangle budget that actually applied (voxel mode or voxel fallback); 0 when none.</summary>
     public int AppliedTriBudget => S.Mode == RetopoMode.Voxel || UsedFallback ? S.TargetTris : 0;
 
@@ -134,7 +142,7 @@ public sealed class Pipeline
 
     public void Retopo()
     {
-        Quad = null; BaseMesh = null; UsedFallback = false; FallbackReason = null;
+        Quad = null; BaseMesh = null; UsedFallback = false; FallbackReason = null; SizingChosen = null;
         if (S.Mode == RetopoMode.Quad)
         {
             string reason;
@@ -190,11 +198,55 @@ public sealed class Pipeline
             (gd, gw) = Timed("flow guidance", () => FlowGuidance.Build(BaseMesh, Rig, b4, w4, r, S.FlowStrength));
             L($"Flow guidance: strength {S.FlowStrength}");
         }
-        Quad = Timed("quad remesh", () => QuadRetopo.Run(BaseMesh, SourceBvh, rho, gd, gw, S.Seed, L));
+
+        // Spacing: uniform, adaptive (sizing field), or auto = run both on the same base mesh and keep the one that
+        // matches the surface better (lower p99 deviation), so adaptivity never makes the shape worse.
+        QuadResult uni = null, ada = null;
+        if (S.Sizing != "adaptive")
+        {
+            float rq = rho;
+            uni = Timed("quad remesh (uniform)", () => QuadRetopo.Run(BaseMesh, SourceBvh, rq, gd, gw, S.Seed, L));
+        }
+        if (S.Sizing != "uniform") ada = RunAdaptive(gd, gw);
+        if (uni != null && ada != null)
+        {
+            float pu = uni.Failure == null ? QuadRetopo.SurfaceP99(BaseMesh, uni.Mesh) : float.MaxValue;
+            float pa = ada.Failure == null ? QuadRetopo.SurfaceP99(BaseMesh, ada.Mesh) : float.MaxValue;
+            Quad = pa < pu ? ada : uni;
+            SizingChosen = pa < pu ? "adaptive" : "uniform";
+            L($"Sizing auto: surface p99 uniform {pu:0.#####} vs adaptive {pa:0.#####} → {SizingChosen}");
+        }
+        else { Quad = uni ?? ada; SizingChosen = uni != null ? "uniform" : "adaptive"; }
         if (Quad.Failure != null) return Quad.Failure;
         Welded = Quad.Mesh;
         Welded.ComputeNormals();
         return null;
+    }
+
+    /// <summary>Quad remesh with the curvature/thickness sizing field, rescaled once if it misses the budget by &gt;4%.</summary>
+    QuadResult RunAdaptive(Vector3[] gd, float[] gw)
+    {
+        var sf = Timed("sizing field", () => SizingField.Build(BaseMesh, S.TargetQuads, S.Adaptivity, 2.5f * Grid.H,
+            S.SizingMaxRatio, S.SizingGradient, L, S.CurvatureSizing));
+        var sizing = sf.Size;
+        float rhoQ = sf.Median;
+        var q = Timed("quad remesh (adaptive)", () => QuadRetopo.Run(BaseMesh, SourceBvh, rhoQ, gd, gw, S.Seed, L, sizing));
+        // extraction yields more faces where density changes than Σ area/size² predicts
+        if (q.Failure == null)
+        {
+            float faceEq = q.Stats.Quads + 0.5f * q.Stats.Triangles + q.Stats.Other;
+            float ratio = faceEq / S.TargetQuads;
+            if (MathF.Abs(ratio - 1) > 0.04f)
+            {
+                float f = MathF.Sqrt(ratio);
+                var s2 = new float[sizing.Length];
+                for (int i = 0; i < s2.Length; i++) s2[i] = MathF.Max(sizing[i] * f, 2.5f * Grid.H);
+                L($"Budget calibration: {faceEq:F0} quad-equivalents for a target of {S.TargetQuads}; rescaling the sizing field by {f:F3}");
+                float r2 = rhoQ * f;
+                q = Timed("quad remesh (adaptive, calibrated)", () => QuadRetopo.Run(BaseMesh, SourceBvh, r2, gd, gw, S.Seed, L, s2));
+            }
+        }
+        return q;
     }
 
     void RetopoVoxel(int targetTris)

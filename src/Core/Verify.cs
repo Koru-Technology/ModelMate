@@ -65,7 +65,10 @@ public static class Verify
         if (p.Quad == null || p.UsedFallback) return;
         var s = p.Quad.Stats;
         float rho = p.Quad.Rho;
-        cl.Check(s.QuadFraction >= 0.90f, $"quads {s.QuadFraction:P1} >= 90% ({s})");
+        // Gate: catches broken extraction (the fallback triggers below 70%). Uniform spacing is typically ≥93% quads;
+        // adaptive spacing trades some quads for shape fidelity (the triangles sit where density changes).
+        cl.Check(s.QuadFraction >= 0.80f, $"quads {s.QuadFraction:P1} >= 80% ({s})");
+        cl.Metric($"spacing: {p.SizingChosen ?? "uniform"}, quad share {s.QuadFraction:P1}");
         // Quality metric, not a gate: at low counts the fixed singularities at limb junctions dominate the fraction.
         cl.Metric($"valence-4 vertices {s.Valence4Fraction:P1} ({s.Irregular} irregular of {s.Vertices})");
         cl.Check(s.BoundaryEdges == 0, $"no boundary edges ({s.BoundaryEdges})");
@@ -79,14 +82,17 @@ public static class Verify
         var m = p.Welded;
         var qb = new Bvh(m.Pos, m.Tris);
         var bm = p.BaseMesh;
+        // deviations are measured in units of the LOCAL target spacing (uniform ρ unless a sizing field was used)
+        var sz = p.Quad.Sizing;
         var dev = new float[bm.VertexCount];
-        double sum = 0; float max = 0; Vector3 at = default;
+        double sum = 0; float max = 0; Vector3 at = default; float maxAbs = 0;
         for (int v = 0; v < bm.VertexCount; v++)
         {
-            float d = qb.Closest(bm.Pos[v], 10 * rho, null, out var hit) ? hit.Dist : 10 * rho;
-            dev[v] = d;
-            sum += d;
-            if (d > max) { max = d; at = bm.Pos[v]; }
+            float local = sz != null ? sz[v] : rho;
+            float d = qb.Closest(bm.Pos[v], 10 * local, null, out var hit) ? hit.Dist : 10 * local;
+            dev[v] = d / local * rho;   // expressed in ρ-equivalents so the thresholds below stay in ρ
+            sum += dev[v];
+            if (dev[v] > max) { max = dev[v]; at = bm.Pos[v]; maxAbs = d; }
         }
         float mean = (float)(sum / bm.VertexCount);
         Array.Sort(dev);
@@ -95,7 +101,7 @@ public static class Verify
         cl.Check(mean < 0.15f * rho && p995 < 0.5f * rho,
             $"surface deviation (base → quad): mean {mean / rho:F3}ρ < 0.15ρ, p99.5 {p995 / rho:F3}ρ < 0.5ρ");
         if (max >= 0.75f * rho)
-            cl.Warn($"feature shortened: surface up to {max / rho:F2}ρ ({max:0.####} units) from the remesh at {at} — likely a thin tip; raise the budget to keep it");
+            cl.Warn($"feature shortened: surface up to {max / rho:F2}× local spacing ({maxAbs:0.####} units) from the remesh at {at} — likely a thin tip; raise the budget to keep it");
         else cl.Metric($"max surface deviation {max / rho:F3}ρ at {at}");
     }
 

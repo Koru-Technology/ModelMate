@@ -56,7 +56,7 @@ public static class Extraction
     {
         var l = h.Fine;
         int n = l.Count;
-        float scale = h.Scale, inv = 1f / scale;
+        var S = l.S;   // per-vertex target edge length
         var dset = new DisjointSets(n);
         var adjNew = new List<int>[n];
         for (int i = 0; i < n; i++) adjNew[i] = new List<int>();
@@ -70,7 +70,9 @@ public static class Extraction
                 int j = l.AdjId[k];
                 if (j < i) continue;
                 var (qa, qb) = FieldMath.CompatOrient4(l.Q[i], l.N[i], l.Q[j], l.N[j]);
-                var (sa, sb) = FieldMath.CompatPositionIndex4(l.V[i], l.N[i], qa, l.O[i], l.V[j], l.N[j], qb, l.O[j], scale, inv, out float err);
+                float sij = 0.5f * (S[i] + S[j]);
+                var (sa, sb) = FieldMath.CompatPositionIndex4(l.V[i], l.N[i], qa, l.O[i], l.V[j], l.N[j], qb, l.O[j], sij, 1f / sij, out float err);
+                err /= sij * sij;   // compare collapse candidates relative to their local scale
                 int dx = Math.Abs(sa.X - sb.X), dy = Math.Abs(sa.Y - sb.Y);
                 if (Math.Max(dx, dy) > 1 || (dx == 1 && dy == 1)) continue; // long links and quad diagonals
                 if (dx + dy == 0) collapse.Add((i, j, err));
@@ -145,23 +147,27 @@ public static class Extraction
         var O = new Vector3[nv];
         var N = new Vector3[nv];
         var cw = new float[nv];
+        var cs = new float[nv];   // cluster scale
         for (int i = 0; i < n; i++)
         {
             if (!vmap.TryGetValue(dset.Find(i), out int j)) continue;
+            float inv = 1f / S[i];
             float w = MathF.Exp(-(l.O[i] - l.V[i]).LengthSquared() * inv * inv * 9);
             O[j] += l.O[i] * w;
             N[j] += l.N[i] * w;
+            cs[j] += S[i] * w;
             cw[j] += w;
         }
         for (int i = 0; i < nv; i++)
         {
-            if (cw[i] == 0) continue;
+            if (cw[i] == 0) { cs[i] = h.Scale; continue; }
             O[i] /= cw[i];
+            cs[i] /= cw[i];
             N[i] = N[i].Normalized();
         }
 
         // Step 5: snap vertices onto nearby edges / remove unnecessary diagonal edges
-        RemoveUnnecessaryEdges(adj, O, N, scale, ref rep);
+        RemoveUnnecessaryEdges(adj, O, N, cs, ref rep);
 
         // Step 6: orient edges (sort neighbors by angle in the tangent plane, descending)
         for (int i = 0; i < nv; i++)
@@ -185,7 +191,7 @@ public static class Extraction
         return 2 * MathF.Sqrt(MathF.Max(0, s * (s - a) * (s - b) * (s - c))) / a;
     }
 
-    static void RemoveUnnecessaryEdges(List<int>[] adj, Vector3[] O, Vector3[] N, float scale, ref Report rep)
+    static void RemoveUnnecessaryEdges(List<int>[] adj, Vector3[] O, Vector3[] N, float[] scale, ref Report rep)
     {
         int guard = 0;
         bool changed;
@@ -196,11 +202,11 @@ public static class Extraction
             do
             {
                 changedInner = false;
-                float thresh = 0.3f * scale;
                 var cands = new List<(float h, int i, int j, int k)>();
                 for (int i = 0; i < adj.Length; i++)
                 {
                     var pi = O[i];
+                    float thresh = 0.3f * scale[i];
                     foreach (var j in adj[i])
                     {
                         var pj = O[j];
@@ -224,11 +230,13 @@ public static class Extraction
                     if (!e1 || !e2) continue;
                     var pi = O[i]; var pj = O[j]; var pk = O[k];
                     if (Height(pi, pj, pk) != hh0) continue;
+                    float thresh = 0.3f * scale[i];
                     if ((pi - pj).Length() < thresh || (pi - pk).Length() < thresh)
                     {
                         int merge = (pi - pj).Length() < thresh ? j : k;
                         O[i] = (O[i] + O[merge]) * 0.5f;
                         N[i] = (N[i] + N[merge]) * 0.5f;
+                        scale[i] = 0.5f * (scale[i] + scale[merge]);
                         var upd = new HashSet<int>();
                         foreach (var nb in adj[merge])
                         {

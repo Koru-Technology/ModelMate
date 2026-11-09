@@ -54,7 +54,8 @@ Camera: right-drag to orbit, Shift + right-drag to pan, mouse wheel or trackpad 
 
 ```sh
 $G --headless --path . -- --in model.glb --out model_rigged.glb \
-   [--retopo quad|voxel] [--tris 8000] [--detail 256] [--flow 0] [--dump-quads layout.obj] [--seed 1] \
+   [--retopo quad|voxel] [--tris 8000] [--sizing auto|uniform|adaptive] [--detail 256] [--flow 0] \
+   [--dump-quads layout.obj] [--seed 1] \
    [--voxel 256] [--close 1] [--tex 1024] [--relax 4] [--falloff 3] \
    [--rig humanoid|single|blob_biped|preset.json] [--save-rig out.json] \
    [--rotate-y 180] [--no-normal] [--no-joint-aware] [--probe-weights]
@@ -114,9 +115,19 @@ Average p99 error over the bone poses, % of model height (quad / voxel):
 
 - **Quad mode bends more cleanly** at every budget. Voxel's bending error stays high even at 16k because decimation leaves long slivers that span joints.
 - **Voxel mode matches the model better overall at ≤4k**, even counting bending, because decimation is curvature-adaptive: it spends triangles where the surface curves. Quad mode spaces edges uniformly, so at 1k a limb gets 4 sides (voxel: about 13 cross-section corners) while flat areas get more than they need.
-- So at mobile budgets neither mode wins outright today. Quad mode's weakness is *where* it spends triangles, not which way its edges run.
+- So at mobile budgets neither mode wins outright with uniform spacing. Quad mode's weakness is *where* it spends triangles, not which way its edges run. That's what adaptive spacing (below) addresses.
 
 (The report builds both modes from the same 256-cell base mesh, which is also the shipping default for both.)
+
+**Adaptive spacing** (quad mode, default `--sizing auto`). A sizing field gives each point of the surface a target edge length from its curvature (spacing ∝ κ^-½, the rule for constant chord error), limited to a 6× range and to gradual changes (≤ 0.2 per unit distance), and rescaled so the total meets the triangle budget (one recalibration pass if extraction misses it by more than 4%). `auto` builds both the uniform and the adaptive remesh from the same base mesh and keeps the one closer to the surface (99th-percentile deviation), so shape fidelity never gets worse; it costs one or two extra remesh passes. Total posed error (same report, % of height):
+
+| model | 1k: uniform / auto / voxel | 2k | 4k |
+|---|---|---|---|
+| Lil gug | **1.84** / 1.88 / 1.07 | 1.19 / **0.86** / 0.75 | 0.65 / **0.53** / 0.54 |
+| A-pose humanoid | 0.96 / **0.89** / 1.01 | 0.54 / **0.53** / 0.40 | 0.34 / **0.30** / 0.25 |
+| lumpy humanoid | 0.98 / 0.98 / 0.87 | 0.61 / **0.60** / 0.32 | 0.36 / **0.35** / 0.23 |
+
+Bending error and collapsed triangles stay at or below uniform; normal error improves. Adaptive spacing puts its triangles where density changes, so the quad share drops (83–94% at 1k–4k, vs 93–97% uniform). Voxel mode still matches fine ridges better at 2k (its anisotropic slivers follow them), at the cost of bending. A thickness term (`--adapt 0.5`) is available but measured as a wash next to curvature alone.
 
 **Skeleton-guided edge flow** (`--flow 0.7`, quad mode) pulls the field toward each region's bone axis, with extra weight at joints. Measured with the same report at 1k–4k triangles it didn't earn a place as the default: it cut collapsed triangles on the A-pose humanoid at 1k (1.2 → 0.7 per 1,000) but made total posed error slightly worse on Lil gug at every budget (by up to 8%) and on the lumpy humanoid at 1k and 4k. On these models the unguided field already runs along the limbs, so guidance mostly adds singularities. It stays available as an experimental CLI option.
 
@@ -125,7 +136,7 @@ The mesh is manifold. UVs are in [0,1]. Weights sum to 1 with at most 4 bones pe
 
 In quad mode:
 - no fallback was used;
-- at least 90% quads;
+- at least 80% quads (catches broken extraction; uniform spacing typically gives ≥93%, adaptive 83–94%);
 - no boundary edges, and the same topology (Euler characteristic) as the base mesh;
 - the face count is within ±20% of the target;
 - surface deviation from the base mesh: mean under 0.15 and 99.5th percentile under 0.5 of the quad spacing. A larger worst-case deviation (typically a thin tip cut short) is reported as a `[WARN]` with its location.
@@ -144,7 +155,7 @@ Humanoid rigs additionally:
 - rotating `LeftUpperArm` moves the left arm but not the right arm or the feet.
 
 ## Limitations
-- Quad mode spaces edges uniformly, so at mobile budgets thin limbs get few sides (4 around an arm at 1k triangles) while flat areas get more than they need. Its edge loops follow surface curvature, not the skeleton.
+- Quad-mode faces are roughly square (isotropic), so at 1k triangles a humanoid's limbs get about 5 sides even with adaptive spacing, and fine ridges are approximated more coarsely than voxel mode's long slivers would. Edge loops follow surface curvature, not the skeleton.
 - Features thinner than about one quad, or about two voxels in voxel mode (fingers, ears, horn tips), can merge or disappear.
 - Parts that are just single-sided surfaces with nothing inside (capes, hair cards) end up as thin closed shells.
 - Weights are automatic only; there's no weight painting. The humanoid template has no finger, eye or jaw bones.

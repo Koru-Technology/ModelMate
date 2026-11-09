@@ -14,6 +14,7 @@ public sealed class QuadResult
     public Relax.Stats Reproject;
     public float Rho;
     public int OrientationSingularities;
+    public float[] Sizing;           // per base vertex target edge length (null = uniform Rho)
     public string Failure;           // null when the result passes the structural gates
 }
 
@@ -61,15 +62,31 @@ public static class QuadRetopo
             }
     }
 
-    public static QuadResult Run(MeshData baseMesh, Bvh source, float rho, Vector3[] guideDir, float[] guideW,
-        int seed, Action<string> log)
+    /// <summary>99th-percentile distance from the dense surface to a remesh (sampled), in model units.</summary>
+    public static float SurfaceP99(MeshData dense, MeshData remesh)
     {
-        var r = new QuadResult { Rho = rho };
+        var bvh = new Bvh(remesh.Pos, remesh.Tris);
+        int stride = Math.Max(1, dense.VertexCount / 20000);
+        int n = (dense.VertexCount + stride - 1) / stride;
+        var d = new float[n];
+        System.Threading.Tasks.Parallel.For(0, n, k =>
+        {
+            var p = dense.Pos[k * stride];
+            d[k] = bvh.Closest(p, float.MaxValue, null, out var hit) ? hit.Dist : 0;
+        });
+        Array.Sort(d);
+        return d[Math.Min(n - 1, (int)(0.99 * n))];
+    }
+
+    public static QuadResult Run(MeshData baseMesh, Bvh source, float rho, Vector3[] guideDir, float[] guideW,
+        int seed, Action<string> log, float[] sizing = null)
+    {
+        var r = new QuadResult { Rho = rho, Sizing = sizing };
         var sw = Stopwatch.StartNew();
         void T(string what) { log?.Invoke($"  [quad:{what}] {sw.ElapsedMilliseconds} ms"); sw.Restart(); }
 
         if (baseMesh.Nrm == null) baseMesh.ComputeNormals();
-        var h = Hierarchy.Build(baseMesh, rho, seed);
+        var h = Hierarchy.Build(baseMesh, rho, seed, sizing);
         T($"hierarchy ({h.Levels.Count} levels, {h.Fine.Count} verts)");
         h.ResetSolution(seed);
         if (guideDir != null && guideW != null)
@@ -107,7 +124,9 @@ public static class QuadRetopo
             r.Cleanup.BadEdgesAfter = c2.BadEdgesAfter;
         }
         m.ComputeNormals();
-        r.Reproject = Relax.Run(m, source, rho, 3, 0.1f, QuadStats.RealAdjacency(m));
+        float snap = rho;
+        if (sizing != null) foreach (var x in sizing) snap = MathF.Max(snap, x);
+        r.Reproject = Relax.Run(m, source, snap, 3, 0.1f, QuadStats.RealAdjacency(m));
         T("cleanup+reproject");
         r.Mesh = m;
         r.Stats = QuadStats.Compute(m);

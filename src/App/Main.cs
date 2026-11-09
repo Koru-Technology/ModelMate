@@ -31,7 +31,7 @@ public partial class Main : Node3D
     Label _status, _voxelInfo, _triInfo;
     SpinBox _voxel, _close, _tris, _relax, _falloff, _tex;
     CheckBox _faceNegZ, _showSource, _showRetopo, _wire, _mirror, _showSkel, _heat;
-    OptionButton _retopoMode, _rigPreset, _parentList, _boneList, _texSize;
+    OptionButton _retopoMode, _spacing, _rigPreset, _parentList, _boneList, _texSize;
     HSlider _rx, _ry, _rz;
     readonly List<Button> _actionButtons = new();
     Button _btnRetopo, _btnFit, _btnCenter, _btnWeights, _btnExport, _btnTestPose, _btnResetPose;
@@ -216,6 +216,8 @@ public partial class Main : Node3D
         Header(vb, "3 · Retopology");
         _retopoMode = Option(vb, "Mode", new[] { "Quad (recommended)", "Voxel + decimate" });
         _retopoMode.ItemSelected += _ => UpdateVoxelInfo();
+        _spacing = Option(vb, "Spacing (quad mode)", new[] { "Auto (recommended)", "Uniform", "Adaptive" });
+        _spacing.TooltipText = "Adaptive spends more quads where the surface curves. Auto builds both and keeps the closer match.";
         _tris = Spin(vb, "Target triangles", 200, 200000, 8000, 100, _ => UpdateVoxelInfo());
         _voxel = Spin(vb, "Voxel resolution (voxel mode)", 64, 512, 256, 16, _ => UpdateVoxelInfo());
         _voxelInfo = new Label { Modulate = new Color(1, 1, 1, 0.7f), AutowrapMode = TextServer.AutowrapMode.WordSmart, CustomMinimumSize = new Vector2(300, 0) };
@@ -450,6 +452,7 @@ public partial class Main : Node3D
         _p.S.RelaxIters = (int)_relax.Value;
         _p.S.TargetTris = (int)_tris.Value;
         _p.S.Mode = _retopoMode.Selected == 0 ? RetopoMode.Quad : RetopoMode.Voxel;
+        _p.S.Sizing = _spacing.Selected switch { 1 => "uniform", 2 => "adaptive", _ => "auto" };
         await RunBusy("retopology", async () =>
         {
             int before = _p.Source.Mesh.TriCount;
@@ -458,7 +461,7 @@ public partial class Main : Node3D
             ShowRetopoStatic();
             _triInfo.Text = $"Triangles: {before:N0} → {_p.Welded.TriCount:N0}";
             if (_p.Quad != null && !_p.UsedFallback)
-                _triInfo.Text += $"\n{_p.Quad.Stats.QuadFraction:P0} quads, {_p.Quad.Stats.Irregular} irregular vertices, quad size {_p.Quad.Rho:0.####}";
+                _triInfo.Text += $"\n{_p.Quad.Stats.QuadFraction:P0} quads, {_p.Quad.Stats.Irregular} irregular vertices, {_p.SizingChosen} spacing (median quad size {_p.Quad.Rho:0.####})";
             if (_p.UsedFallback)
             {
                 _triInfo.Text += "\nQuad remesh failed, used voxel fallback: " + _p.FallbackReason;

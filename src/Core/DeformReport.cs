@@ -67,6 +67,8 @@ public static class DeformReport
             {
                 p.S.Mode = mode == "voxel" ? RetopoMode.Voxel : RetopoMode.Quad;
                 p.S.FlowStrength = mode == "quadflow" ? 0.7f : 0f;   // quadflow = quad mode with skeleton guidance
+                // quad = uniform spacing, quadadapt = sizing field, quadauto = the default (better of the two)
+                p.S.Sizing = mode == "quadadapt" ? "adaptive" : mode == "quadauto" ? "auto" : "uniform";
                 p.S.TargetTris = b;
                 // Same starting surface for both modes: voxel mode would otherwise remesh from VoxelRes (192 by
                 // default), which can bridge narrow gaps (armpits) and confound the comparison.

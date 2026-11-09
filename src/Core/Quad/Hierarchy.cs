@@ -21,6 +21,7 @@ public sealed class Level
     // Solution and constraints.
     public Vector3[] Q, O, CQ;
     public float[] CQw;
+    public float[] S;               // target edge length per vertex (uniform unless a sizing field is given)
 
     public int Count => V.Length;
 }
@@ -32,12 +33,15 @@ public sealed class Level
 public sealed class Hierarchy
 {
     public readonly List<Level> Levels = new();
-    public float Scale;
+    public float Scale;             // median target edge length (global reference)
     public Level Fine => Levels[0];
 
     const int MaxDepth = 25;
 
-    public static Hierarchy Build(MeshData m, float scale, int seed)
+    /// <param name="sizing">Optional per-vertex target edge length (same length as m.Pos); null = uniform `scale`.
+    /// Deviation from the reference, which only supports a global scale: compat and rounding use local scales,
+    /// and coarse levels take the area-weighted mean of their children.</param>
+    public static Hierarchy Build(MeshData m, float scale, int seed, float[] sizing = null)
     {
         var h = new Hierarchy { Scale = scale };
         if (m.Nrm == null) m.ComputeNormals();
@@ -62,6 +66,21 @@ public sealed class Hierarchy
         {
             l.CQ = new Vector3[l.Count];
             l.CQw = new float[l.Count];
+        }
+        // scale per level: fine from sizing, coarse = area-weighted mean of children
+        h.Levels[0].S = new float[h.Levels[0].Count];
+        for (int i = 0; i < h.Levels[0].Count; i++) h.Levels[0].S[i] = sizing != null ? sizing[i] : scale;
+        for (int li = 1; li < h.Levels.Count; li++)
+        {
+            var f = h.Levels[li - 1]; var c = h.Levels[li];
+            c.S = new float[c.Count];
+            for (int i = 0; i < c.Count; i++)
+            {
+                int u0 = c.Up0[i], u1 = c.Up1[i];
+                if (u1 < 0) { c.S[i] = f.S[u0]; continue; }
+                float a0 = f.A[u0], a1 = f.A[u1], sa = a0 + a1;
+                c.S[i] = sa > 1e-30f ? (f.S[u0] * a0 + f.S[u1] * a1) / sa : 0.5f * (f.S[u0] + f.S[u1]);
+            }
         }
         return h;
     }
@@ -228,7 +247,7 @@ public sealed class Hierarchy
                 float ang = (float)(rng.NextDouble() * 2 * Math.PI);
                 l.Q[i] = s * MathF.Cos(ang) + t * MathF.Sin(ang);
                 float x = (float)rng.NextDouble() * 2 - 1, y = (float)rng.NextDouble() * 2 - 1;
-                l.O[i] = l.V[i] + (s * x + t * y) * Scale;
+                l.O[i] = l.V[i] + (s * x + t * y) * l.S[i];
             }
         }
     }

@@ -41,7 +41,7 @@ public static class FieldSolver
     {
         for (int level = h.Levels.Count - 1; level >= 0; level--)
         {
-            for (int it = 0; it < LevelIterations; it++) PositionSweep(h.Levels[level], h.Scale);
+            for (int it = 0; it < LevelIterations; it++) PositionSweep(h.Levels[level]);
             if (level > 0)
             {
                 var c = h.Levels[level];
@@ -96,9 +96,8 @@ public static class FieldSolver
         }
     }
 
-    static void PositionSweep(Level l, float scale)
+    static void PositionSweep(Level l)
     {
-        float inv = 1f / scale;
         foreach (var phase in l.Phases)
         {
             Parallel.For(0, phase.Length, pi =>
@@ -114,13 +113,14 @@ public static class FieldSolver
                     if (w == 0) continue;
                     int j = l.AdjId[k];
                     var qj = l.Q[j].Normalized();
-                    var (a, b) = FieldMath.CompatPosition4(vi, ni, qi, sum, l.V[j], l.N[j], qj, l.O[j], scale, inv);
+                    float sij = 0.5f * (l.S[i] + l.S[j]);
+                    var (a, b) = FieldMath.CompatPosition4(vi, ni, qi, sum, l.V[j], l.N[j], qj, l.O[j], sij, 1f / sij);
                     sum = a * wsum + b * w;
                     wsum += w;
                     if (wsum > 1e-30f) sum /= wsum;
                     sum -= ni * ni.Dot(sum - vi);
                 }
-                if (wsum > 0) l.O[i] = FieldMath.PositionRound4(sum, qi, ni, vi, scale, inv);
+                if (wsum > 0) l.O[i] = FieldMath.PositionRound4(sum, qi, ni, vi, l.S[i], 1f / l.S[i]);
             });
         }
     }
