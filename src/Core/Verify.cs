@@ -74,14 +74,15 @@ public static class Verify
         var m = p.Welded;
         var qb = new Bvh(m.Pos, m.Tris);
         var bm = p.BaseMesh;
-        double sum = 0; float max = 0;
+        double sum = 0; float max = 0; Vector3 at = default;
         for (int v = 0; v < bm.VertexCount; v++)
         {
             float d = qb.Closest(bm.Pos[v], 10 * rho, null, out var hit) ? hit.Dist : 10 * rho;
-            sum += d; max = MathF.Max(max, d);
+            sum += d;
+            if (d > max) { max = d; at = bm.Pos[v]; }
         }
         float mean = (float)(sum / bm.VertexCount);
-        cl.Check(mean < 0.15f * rho && max < 0.75f * rho, $"surface deviation (base → quad): mean {mean / rho:F3}ρ < 0.15ρ, max {max / rho:F3}ρ < 0.75ρ");
+        cl.Check(mean < 0.15f * rho && max < 0.75f * rho, $"surface deviation (base → quad): mean {mean / rho:F3}ρ < 0.15ρ, max {max / rho:F3}ρ < 0.75ρ (worst at {at})");
     }
 
     static int EulerChar(MeshData m)

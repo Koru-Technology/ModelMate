@@ -30,8 +30,8 @@ public partial class Main : Node3D
     RichTextLabel _log;
     Label _status, _voxelInfo, _triInfo;
     SpinBox _voxel, _close, _tris, _relax, _falloff, _tex;
-    CheckBox _faceNegZ, _decimate, _showSource, _showRetopo, _wire, _mirror, _showSkel, _heat;
-    OptionButton _rigType, _boneList, _texSize;
+    CheckBox _faceNegZ, _showSource, _showRetopo, _wire, _mirror, _showSkel, _heat;
+    OptionButton _retopoMode, _rigType, _boneList, _texSize;
     HSlider _rx, _ry, _rz;
     readonly List<Button> _actionButtons = new();
     Button _btnRetopo, _btnFit, _btnCenter, _btnWeights, _btnExport, _btnTestPose, _btnResetPose;
@@ -69,7 +69,6 @@ public partial class Main : Node3D
     {
         outDir = ProjectSettings.GlobalizePath(outDir);
         await Import(ProjectSettings.GlobalizePath(input));
-        _decimate.ButtonPressed = true;
         _tris.Value = 8000;
         await OnRetopoPressed();
         await OnFitPressed();
@@ -154,13 +153,14 @@ public partial class Main : Node3D
         _showSource = Check(vb, "Show source", true, v => { if (_sourceNode != null) _sourceNode.Visible = v; });
 
         Header(vb, "2 · Retopology");
-        _voxel = Spin(vb, "Voxel resolution", 64, 384, 192, 16, _ => UpdateVoxelInfo());
+        _retopoMode = Option(vb, "Mode", new[] { "Quad (recommended)", "Voxel + decimate" });
+        _retopoMode.ItemSelected += _ => UpdateVoxelInfo();
+        _tris = Spin(vb, "Target triangles", 200, 200000, 8000, 100, _ => UpdateVoxelInfo());
+        _voxel = Spin(vb, "Voxel resolution (voxel mode)", 64, 384, 192, 16, _ => UpdateVoxelInfo());
         _voxelInfo = new Label { Modulate = new Color(1, 1, 1, 0.7f), AutowrapMode = TextServer.AutowrapMode.WordSmart, CustomMinimumSize = new Vector2(300, 0) };
         vb.AddChild(_voxelInfo);
         _close = Spin(vb, "Gap closing (voxels)", 0, 3, 1, 1);
         _relax = Spin(vb, "Relax iterations", 0, 10, 4, 1);
-        _decimate = Check(vb, "Decimate to triangle budget", false, _ => { });
-        _tris = Spin(vb, "Target triangles", 500, 200000, 10000, 500);
         _btnRetopo = Btn(vb, "Retopologize", () => _ = OnRetopoPressed());
         _triInfo = new Label();
         vb.AddChild(_triInfo);
@@ -283,8 +283,17 @@ public partial class Main : Node3D
         if (_p.Source == null) { _voxelInfo.Text = "Voxel size: (import first)"; return; }
         var s = _p.Source.Mesh.Bounds().Size;
         float ext = MathF.Max(s.X, MathF.Max(s.Y, s.Z));
-        float h = ext / (float)_voxel.Value;
-        _voxelInfo.Text = $"Voxel size: {h:0.####} units  (features thinner than ~{2 * h:0.###} may be lost)";
+        if (_retopoMode.Selected == 0)
+        {
+            // source area over-counts internal faces, so this is a lower bound on the final spacing
+            float rho = MathF.Sqrt((float)(Pipeline.Area(_p.Source.Mesh) / Math.Max(1, (int)_tris.Value / 2)));
+            _voxelInfo.Text = $"Quad size ≈ {rho:0.####} units or more  (features thinner than that may be lost)";
+        }
+        else
+        {
+            float h = ext / (float)_voxel.Value;
+            _voxelInfo.Text = $"Voxel size: {h:0.####} units  (features thinner than ~{2 * h:0.###} may be lost)";
+        }
     }
 
     void UpdateButtons()
@@ -380,7 +389,8 @@ public partial class Main : Node3D
         _p.S.VoxelRes = (int)_voxel.Value;
         _p.S.Close = (int)_close.Value;
         _p.S.RelaxIters = (int)_relax.Value;
-        _p.S.TargetTris = _decimate.ButtonPressed ? (int)_tris.Value : 0;
+        _p.S.TargetTris = (int)_tris.Value;
+        _p.S.Mode = _retopoMode.Selected == 0 ? RetopoMode.Quad : RetopoMode.Voxel;
         await RunBusy("retopology", async () =>
         {
             int before = _p.Source.Mesh.TriCount;
@@ -388,6 +398,14 @@ public partial class Main : Node3D
             InvalidateWeights();
             ShowRetopoStatic();
             _triInfo.Text = $"Triangles: {before:N0} → {_p.Welded.TriCount:N0}";
+            if (_p.Quad != null && !_p.UsedFallback)
+                _triInfo.Text += $"\n{_p.Quad.Stats.QuadFraction:P0} quads, {_p.Quad.Stats.Irregular} irregular vertices, quad size {_p.Quad.Rho:0.####}";
+            if (_p.UsedFallback)
+            {
+                _triInfo.Text += "\nQuad remesh failed, used voxel fallback: " + _p.FallbackReason;
+                _triInfo.Modulate = new Color(1f, 0.6f, 0.4f);
+            }
+            else _triInfo.Modulate = Colors.White;
             _showSource.ButtonPressed = false;
             if (_sourceNode != null) _sourceNode.Visible = false;
         });

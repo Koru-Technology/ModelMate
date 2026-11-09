@@ -121,6 +121,24 @@ public sealed class VoxelGrid
             if (!f && vote[i]) voteOnly++;
         }
         g.Method = $"flood(close={close}) | winding-vote";
+
+        // Fill enclosed cavities: empty space not connected to the grid boundary can never be seen, but it would
+        // become an extra inner surface (a separate mesh component inside the body).
+        var reach = new bool[n];
+        var q2 = new Queue<int>();
+        for (int z = 0; z < g.Nz; z++)
+        for (int y = 0; y < g.Ny; y++)
+        for (int x = 0; x < g.Nx; x++)
+        {
+            if (x != 0 && y != 0 && z != 0 && x != g.Nx - 1 && y != g.Ny - 1 && z != g.Nz - 1) continue;
+            int i = g.Idx(x, y, z);
+            if (!g.Inside[i] && !reach[i]) { reach[i] = true; q2.Enqueue(i); }
+        }
+        Flood(g, q2, reach, g.Inside);
+        int cavity = 0;
+        for (int i = 0; i < n; i++)
+            if (!g.Inside[i] && !reach[i]) { g.Inside[i] = true; cavity++; }
+        if (cavity > 0) log?.Invoke($"Inside test: filled {cavity} enclosed cavity voxels");
         if (voteOnly > 0.01f * wallCount)
             log?.Invoke($"Inside test: flood fill leaked somewhere; winding vote recovered {voteOnly} interior points");
         return g;

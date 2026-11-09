@@ -10,12 +10,16 @@ public enum RetopoMode { Quad, Voxel }
 public sealed class PipelineSettings
 {
     public RetopoMode Mode = RetopoMode.Quad;
-    public int TargetQuads = 8000;  // quad mode: target face count (≈ 2x triangles after export)
+    /// <summary>Output triangle budget for both modes (quad mode targets half as many quads). In voxel mode 0 = no decimation.</summary>
+    public int TargetTris = 8000;
+    public int TargetQuads => Math.Max(1, TargetTris / 2);
+    /// <summary>Minimum base-mesh resolution (cells on the longest axis) in quad mode, so low budgets still get a fine
+    /// surface for the normal-map bake and the fidelity reference.</summary>
+    public int DetailRes = 256;
     public int Seed = 1;            // field initialization seed (deterministic results)
     public int VoxelRes = 192;      // cells on longest axis for retopo
     public int Close = 1;           // gap-closing voxels
     public int RelaxIters = 4;
-    public int TargetTris = 0;      // 0 = no decimation
     public int WeightRes = 80;      // cells on longest axis for weights
     public float Falloff = 3f;      // weight = 1/d^falloff
     public int SmoothPasses = 3;
@@ -55,8 +59,7 @@ public sealed class Pipeline
     public bool UsedFallback;
     public string FallbackReason;
     /// <summary>Triangle budget that actually applied (voxel mode or voxel fallback); 0 when none.</summary>
-    public int AppliedTriBudget => S.Mode == RetopoMode.Voxel ? S.TargetTris
-        : UsedFallback ? (S.TargetTris > 0 ? S.TargetTris : 2 * S.TargetQuads) : 0;
+    public int AppliedTriBudget => S.Mode == RetopoMode.Voxel || UsedFallback ? S.TargetTris : 0;
 
     readonly object _logLock = new();
     void L(string s) { lock (_logLock) Log(s); }
@@ -130,7 +133,7 @@ public sealed class Pipeline
             UsedFallback = true;
             FallbackReason = reason;
             L($"WARNING: quad remesh failed ({reason}); falling back to voxel remesh.");
-            RetopoVoxel(S.TargetTris > 0 ? S.TargetTris : 2 * S.TargetQuads);
+            RetopoVoxel(S.TargetTris);
             return;
         }
         RetopoVoxel(S.TargetTris);
@@ -144,7 +147,7 @@ public sealed class Pipeline
         float longest = MathF.Max(ext.X, MathF.Max(ext.Y, ext.Z));
         // spacing from the (over-estimated, because of internal faces) source area; refined below
         float rho = MathF.Sqrt((float)(Area(sm) / S.TargetQuads));
-        int res = (int)MathF.Ceiling(longest / (rho / 3f));
+        int res = Math.Max((int)MathF.Ceiling(longest / (rho / 3f)), S.DetailRes);
         bool clamped = false;
         if (res > 512)
         {

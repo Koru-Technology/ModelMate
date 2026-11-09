@@ -11,6 +11,7 @@ public static class TestAsset
     {
         public PrimitiveMesh Mesh;
         public Transform3D Xf;
+        public Transform3D PreXf;   // before the A-pose arm rotation (T-pose space)
         public string Tag;
     }
 
@@ -20,6 +21,31 @@ public static class TestAsset
         WriteVariant(System.IO.Path.Combine(dir, "humanoid.glb"), open: false);
         WriteVariant(System.IO.Path.Combine(dir, "humanoid_open.glb"), open: true);
         WriteVariant(System.IO.Path.Combine(dir, "humanoid_apose.glb"), open: false, apose: true);
+        WriteVariant(System.IO.Path.Combine(dir, "humanoid_lumpy.glb"), open: false, apose: true, lumpy: true);
+    }
+
+    /// <summary>
+    /// Organic-looking displacement (T-pose space): muscle-like bulges plus ridges running obliquely to the limbs,
+    /// so principal curvature no longer follows the bones. Not mirror-symmetric on purpose.
+    /// </summary>
+    static float Lumps(Vector3 p)
+    {
+        var d1 = new Vector3(0.6f, 0.5f, 0.6f).Normalized();
+        var d2 = new Vector3(-0.4f, 0.7f, 0.5f).Normalized();
+        var d3 = new Vector3(0.3f, -0.2f, 0.9f).Normalized();
+        float f = 0.0045f * MathF.Sin(38f * p.Dot(d1)) + 0.0035f * MathF.Sin(52f * p.Dot(d2) + 1.3f)
+                + 0.0025f * MathF.Sin(71f * p.Dot(d3) + 0.4f);
+        (Vector3 c, float a, float r)[] bulges =
+        {
+            (new(0.36f, 1.48f, 0.03f), 0.014f, 0.06f), (new(-0.36f, 1.48f, 0.03f), 0.012f, 0.06f),   // biceps
+            (new(0.62f, 1.45f, 0.03f), 0.009f, 0.05f), (new(-0.62f, 1.45f, 0.03f), 0.009f, 0.05f),   // forearms
+            (new(0.10f, 0.66f, 0.07f), 0.012f, 0.08f), (new(-0.10f, 0.66f, 0.07f), 0.012f, 0.08f),   // thighs
+            (new(0.10f, 0.31f, -0.05f), 0.014f, 0.06f), (new(-0.10f, 0.31f, -0.05f), 0.014f, 0.06f), // calves
+            (new(0.09f, 1.30f, 0.11f), 0.016f, 0.08f), (new(-0.09f, 1.30f, 0.11f), 0.016f, 0.08f),   // chest
+            (new(0f, 1.05f, 0.10f), 0.013f, 0.10f), (new(0.05f, 1.40f, -0.11f), 0.012f, 0.09f),       // belly, back
+        };
+        foreach (var (c, a, r) in bulges) f += a * MathF.Exp(-(p - c).LengthSquared() / (r * r));
+        return f;
     }
 
     /// <summary>~1M-triangle variant for timing (very high-segment primitives).</summary>
@@ -29,11 +55,17 @@ public static class TestAsset
         WriteVariant(System.IO.Path.Combine(dir, "humanoid_dense.glb"), open: false, dense: true);
     }
 
-    static List<Part> Parts(bool apose, bool dense)
+    static List<Part> Parts(bool apose, bool dense, bool lumpy = false)
     {
         var parts = new List<Part>();
         void Add(PrimitiveMesh m, Vector3 at, Basis b = default, string tag = "")
         {
+            if (lumpy)
+            {   // enough resolution for the displacement to show
+                if (m is CapsuleMesh c) { c.RadialSegments = 96; c.Rings = 48; }
+                if (m is SphereMesh sp) { sp.RadialSegments = 96; sp.Rings = 48; }
+                if (m is BoxMesh bx) { bx.SubdivideWidth = 24; bx.SubdivideHeight = 24; bx.SubdivideDepth = 24; }
+            }
             if (dense)
             {
                 if (m is CapsuleMesh c) { c.RadialSegments = 320; c.Rings = 160; }
@@ -41,6 +73,7 @@ public static class TestAsset
                 if (m is BoxMesh bx) { bx.SubdivideWidth = 60; bx.SubdivideHeight = 60; bx.SubdivideDepth = 60; }
             }
             var xf = new Transform3D(b == default ? Basis.Identity : b, at);
+            var pre = xf;
             // A-pose: rotate arm parts 45° down about the shoulder pivot
             if (apose && MathF.Abs(at.X) > 0.25f && MathF.Abs(at.Y - 1.43f) < 0.01f)
             {
@@ -49,7 +82,7 @@ public static class TestAsset
                 var rot = new Transform3D(new Basis(Vector3.Back, -sx * Mathf.Pi / 4), Vector3.Zero);
                 xf = new Transform3D(Basis.Identity, pivot) * rot * new Transform3D(Basis.Identity, -pivot) * xf;
             }
-            parts.Add(new Part { Mesh = m, Xf = xf, Tag = tag });
+            parts.Add(new Part { Mesh = m, Xf = xf, PreXf = pre, Tag = tag });
         }
         var toX = new Basis(Vector3.Back, Mathf.Pi / 2); // capsule axis Y -> X
 
@@ -70,10 +103,10 @@ public static class TestAsset
         return parts;
     }
 
-    static void WriteVariant(string path, bool open, bool apose = false, bool dense = false)
+    static void WriteVariant(string path, bool open, bool apose = false, bool dense = false, bool lumpy = false)
     {
         var pos = new List<Vector3>(); var nrm = new List<Vector3>(); var uv = new List<Vector2>(); var idx = new List<int>();
-        foreach (var part in Parts(apose, dense))
+        foreach (var part in Parts(apose, dense, lumpy))
         {
             var a = part.Mesh.GetMeshArrays();
             var v = a[(int)Mesh.ArrayType.Vertex].AsVector3Array();
@@ -83,7 +116,21 @@ public static class TestAsset
             int baseV = pos.Count;
             for (int i = 0; i < v.Length; i++)
             {
-                pos.Add(part.Xf * v[i]);
+                if (lumpy)
+                {
+                    // displace in T-pose space, then apply the A-pose rotation, so overlapping parts agree
+                    var pT = part.PreXf * v[i];
+                    var nT = (part.PreXf.Basis * n[i]).Normalized();
+                    if (part.Mesh is BoxMesh bx)
+                    {
+                        // per-face box normals would tear the corners open; use a position-only (ellipsoid) direction
+                        var h = bx.Size * 0.5f;
+                        var d = pT - part.PreXf.Origin;
+                        nT = new Vector3(d.X / (h.X * h.X), d.Y / (h.Y * h.Y), d.Z / (h.Z * h.Z)).Normalized();
+                    }
+                    pos.Add(part.Xf * part.PreXf.AffineInverse() * (pT + nT * Lumps(pT)));
+                }
+                else pos.Add(part.Xf * v[i]);
                 nrm.Add((part.Xf.Basis * n[i]).Normalized());
                 uv.Add(t[i]);
             }
