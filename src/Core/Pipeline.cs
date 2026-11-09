@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using Godot;
 using ModelMate.Core.Quad;
@@ -202,13 +203,16 @@ public sealed class Pipeline
 
         // Spacing: uniform, adaptive (sizing field), or auto = run both on the same base mesh and keep the one that
         // matches the surface better (lower p99 deviation), so adaptivity never makes the shape worse.
+        // sharp tips are a property of the surface: detect once (uniform radius) and reuse for every remesh pass
+        float rt = rho;
+        var tips = QuadRetopo.PinTips ? Timed("tip detection", () => TipDetector.Find(BaseMesh, null, rt)) : null;
         QuadResult uni = null, ada = null;
         if (S.Sizing != "adaptive")
         {
             float rq = rho;
-            uni = Timed("quad remesh (uniform)", () => QuadRetopo.Run(BaseMesh, SourceBvh, rq, gd, gw, S.Seed, L));
+            uni = Timed("quad remesh (uniform)", () => QuadRetopo.Run(BaseMesh, SourceBvh, rq, gd, gw, S.Seed, L, null, tips));
         }
-        if (S.Sizing != "uniform") ada = RunAdaptive(gd, gw);
+        if (S.Sizing != "uniform") ada = RunAdaptive(gd, gw, tips);
         if (uni != null && ada != null)
         {
             float pu = uni.Failure == null ? QuadRetopo.SurfaceP99(BaseMesh, uni.Mesh) : float.MaxValue;
@@ -225,13 +229,13 @@ public sealed class Pipeline
     }
 
     /// <summary>Quad remesh with the curvature/thickness sizing field, rescaled once if it misses the budget by &gt;4%.</summary>
-    QuadResult RunAdaptive(Vector3[] gd, float[] gw)
+    QuadResult RunAdaptive(Vector3[] gd, float[] gw, List<int> tips)
     {
         var sf = Timed("sizing field", () => SizingField.Build(BaseMesh, S.TargetQuads, S.Adaptivity, 2.5f * Grid.H,
             S.SizingMaxRatio, S.SizingGradient, L, S.CurvatureSizing));
         var sizing = sf.Size;
         float rhoQ = sf.Median;
-        var q = Timed("quad remesh (adaptive)", () => QuadRetopo.Run(BaseMesh, SourceBvh, rhoQ, gd, gw, S.Seed, L, sizing));
+        var q = Timed("quad remesh (adaptive)", () => QuadRetopo.Run(BaseMesh, SourceBvh, rhoQ, gd, gw, S.Seed, L, sizing, tips));
         // extraction yields more faces where density changes than Σ area/size² predicts
         if (q.Failure == null)
         {
@@ -244,7 +248,7 @@ public sealed class Pipeline
                 for (int i = 0; i < s2.Length; i++) s2[i] = MathF.Max(sizing[i] * f, 2.5f * Grid.H);
                 L($"Budget calibration: {faceEq:F0} quad-equivalents for a target of {S.TargetQuads}; rescaling the sizing field by {f:F3}");
                 float r2 = rhoQ * f;
-                q = Timed("quad remesh (adaptive, calibrated)", () => QuadRetopo.Run(BaseMesh, SourceBvh, r2, gd, gw, S.Seed, L, s2));
+                q = Timed("quad remesh (adaptive, calibrated)", () => QuadRetopo.Run(BaseMesh, SourceBvh, r2, gd, gw, S.Seed, L, s2, tips));
             }
         }
         return q;

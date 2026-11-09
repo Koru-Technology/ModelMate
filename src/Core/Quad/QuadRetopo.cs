@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using Godot;
 
@@ -85,7 +86,7 @@ public static class QuadRetopo
     public static bool PinTips = true;
 
     public static QuadResult Run(MeshData baseMesh, Bvh source, float rho, Vector3[] guideDir, float[] guideW,
-        int seed, Action<string> log, float[] sizing = null)
+        int seed, Action<string> log, float[] sizing = null, List<int> tips = null)
     {
         var r = new QuadResult { Rho = rho, Sizing = sizing };
         var sw = Stopwatch.StartNew();
@@ -97,7 +98,7 @@ public static class QuadRetopo
         h.ResetSolution(seed);
         if (PinTips)
         {
-            var tips = TipDetector.Find(baseMesh, sizing, rho);
+            tips ??= TipDetector.Find(baseMesh, sizing, rho);
             if (tips.Count > 0)
             {
                 var f0 = h.Fine;
