@@ -23,7 +23,8 @@ public sealed class PipelineSettings
     public int RelaxIters = 4;
     public int WeightRes = 80;      // cells on longest axis for weights
     public float Falloff = 3f;      // weight = 1/d^falloff
-    public int SmoothPasses = 3;
+    public float SmoothRadius = 0.02f;  // weight smoothing radius, fraction of model height (world-space, budget-independent)
+    public bool SymmetricWeights = true; // mirror-average weights when the model and rig are both symmetric
     public int TexSize = 1024;
     public string Rig = "humanoid"; // preset name (humanoid, single, blob_biped, …) or a path to a preset .json
     public float MaxEdgeFrac = 0.04f; // decimation max edge length, fraction of bbox diagonal
@@ -47,6 +48,12 @@ public sealed class Pipeline
     public MeshData Welded;
     public RigSkeleton Rig;
     public RigPreset.PresetDto RigPresetData;   // JSON preset the rig came from (null for code presets); carries named poses
+    public VoxelGrid WeightGrid;         // built once per import (rebuilt if gap closing changes)
+    int _weightGridClose = -1;
+    public MeshData WeightSurface;      // dense surface the weights were solved on (the voxel base mesh)
+    public int[] SurfBones;             // top-4 weights on WeightSurface (the reference for every output mesh)
+    public float[] SurfWeights;
+    public bool WeightsSymmetric;
     public int[] WeldedBones;
     public float[] WeldedWeights;
     public MeshData Split;
@@ -82,6 +89,7 @@ public sealed class Pipeline
     {
         Node sc = null;
         Source = Timed("import", () => Importer.Load(path, keepScene, out sc));
+        WeightGrid = null; _weightGridClose = -1;
         scene = sc;
         if (S.RotateY != 0)
         {
@@ -232,13 +240,62 @@ public sealed class Pipeline
         L($"Skeleton: {Rig.Bones.Count} bones");
     }
 
+    /// <summary>
+    /// Weights are solved once on the dense base surface, smoothed over a world-space radius, optionally
+    /// mirror-averaged, pruned to 4 influences, then transferred to the output mesh by closest point. The result
+    /// therefore doesn't depend on the triangle budget or the remesh topology.
+    /// </summary>
     public void ComputeWeights()
     {
         var sm = Source.Mesh;
-        var wg = Timed("weight voxels", () => VoxelGrid.Build(sm.Pos, sm.Tris, SourceBvh, S.WeightRes, S.Close, L));
-        var dense = Timed("geodesic weights", () => VoxelGeodesicWeights.Compute(Welded, Rig, wg, SourceBvh, S.Falloff, L));
-        (WeldedBones, WeldedWeights) = Timed("smooth+prune", () =>
-            WeightSmoother.SmoothAndPrune(Welded, dense, Rig.Bones.Count, S.SmoothPasses));
+        if (WeightGrid == null || _weightGridClose != S.Close)
+        {
+            WeightGrid = Timed("weight voxels", () => VoxelGrid.Build(sm.Pos, sm.Tris, SourceBvh, S.WeightRes, S.Close, L));
+            _weightGridClose = S.Close;
+        }
+        var surf = BaseMesh ?? Welded;
+        WeightSurface = surf;
+        int nb = Rig.Bones.Count;
+        var dense = Timed("geodesic weights", () => VoxelGeodesicWeights.Compute(surf, Rig, WeightGrid, SourceBvh, S.Falloff, L));
+
+        // passes for a fixed world radius: ½-averaging is a lazy random walk, spread ≈ edge·√(passes/2), so (radius/edge)² passes ≈ 0.7·radius
+        double edgeSum = 0; int edgeN = 0;
+        for (int t = 0; t < surf.TriCount; t += 7)
+        {
+            edgeSum += (surf.Pos[surf.Tris[3 * t]] - surf.Pos[surf.Tris[3 * t + 1]]).Length(); edgeN++;
+        }
+        float edge = (float)(edgeSum / Math.Max(1, edgeN));
+        float radius = S.SmoothRadius * sm.Bounds().Size.Y;
+        int passes = Math.Clamp((int)MathF.Ceiling(radius / MathF.Max(edge, 1e-9f) * radius / MathF.Max(edge, 1e-9f)), 1, 200);
+        dense = Timed($"smooth weights ({passes} passes)", () => WeightSmoother.Smooth(surf, dense, nb, passes));
+
+        WeightsSymmetric = false;
+        Bvh surfBvh = null;
+        if (S.SymmetricWeights)
+        {
+            var box = surf.Bounds();
+            float cx = box.GetCenter().X;
+            float voxel = Grid?.H ?? box.Size.Length() / 256f;
+            surfBvh = new Bvh(surf.Pos, surf.Tris);
+            var (meshSym, mean, p99, max) = Symmetry.DetectMesh(surf, surfBvh, cx, voxel);
+            bool rigSym = Symmetry.RigSymmetric(Rig, cx, 0.01f * box.Size.Y, out var why);
+            if (meshSym && rigSym)
+            {
+                dense = Timed("symmetric weights", () => Symmetry.SymmetrizeDense(surf, surfBvh, dense, nb, Symmetry.BoneMirror(Rig), cx));
+                WeightsSymmetric = true;
+                L("Weights: mirror-averaged (model and rig are symmetric)");
+            }
+            else L($"Weights: not mirrored ({(meshSym ? "rig: " + why : $"model isn't mirror-symmetric (mean {mean / voxel:F2}, p99 {p99 / voxel:F2}, max {max / voxel:F1} voxels)")})");
+        }
+        (SurfBones, SurfWeights) = WeightSmoother.Prune(dense, surf.VertexCount, nb);
+
+        if (surf == Welded) (WeldedBones, WeldedWeights) = (SurfBones, SurfWeights);
+        else
+        {
+            surfBvh ??= new Bvh(surf.Pos, surf.Tris);
+            (WeldedBones, WeldedWeights) = Timed("transfer weights", () =>
+                Symmetry.TransferWeights(surf, surfBvh, SurfBones, SurfWeights, Welded));
+        }
     }
 
     /// <summary>[main] UV unwrap + transfer of welded attributes onto split vertices.</summary>

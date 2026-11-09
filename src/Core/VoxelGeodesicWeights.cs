@@ -169,6 +169,10 @@ public static class WeightSmoother
 {
     /// <summary>Laplacian smoothing on the welded mesh, then top-4 prune + normalize.</summary>
     public static (int[] bones, float[] weights) SmoothAndPrune(MeshData mesh, float[] dense, int nb, int passes)
+        => Prune(Smooth(mesh, dense, nb, passes), mesh.VertexCount, nb);
+
+    /// <summary>Passes of x ← ½x + ½·mean(neighbours) on a dense [vertex × bone] array.</summary>
+    public static float[] Smooth(MeshData mesh, float[] dense, int nb, int passes)
     {
         int nv = mesh.VertexCount;
         var (start, nbr) = mesh.BuildAdjacency();
@@ -189,7 +193,12 @@ public static class WeightSmoother
             });
             cur = next;
         }
+        return cur;
+    }
 
+    /// <summary>Keeps the 4 largest influences per vertex and normalizes them.</summary>
+    public static (int[] bones, float[] weights) Prune(float[] cur, int nv, int nb)
+    {
         var bones = new int[nv * 4];
         var weights = new float[nv * 4];
         Parallel.For(0, nv, v =>
