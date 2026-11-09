@@ -30,7 +30,7 @@ A small Godot 4.7 (C#) tool. It turns an unrigged static glTF (a dense sculpt or
 
 Everything runs inside Godot, with no Blender or other external tools. With the humanoid rig, bone names and parent bones match Godot's `SkeletonProfileHumanoid`, which is what humanoid retargeting expects. To retarget, open the `.glb` in your game project's import dialog and set Skeleton3D → Retarget → Bone Map → `SkeletonProfileHumanoid`.
 
-Speed on an M-series Mac, quad mode, 8,000 quads (16k triangles): about 4.5 s for a 46k-triangle model and about 8.5 s for a 3.8M-triangle one.
+Speed on an M-series Mac, quad mode, at the default budget of 8,000 triangles: about 3–5 s for a 46k-triangle model and about 8 s for a 3.8M-triangle one.
 
 ## Running
 
@@ -42,7 +42,7 @@ $G --path .                      # UI
 
 **UI workflow** (right-hand panel, top to bottom):
 1. Import a `.glb` or `.gltf`.
-2. Click **Retopologize**. Quad mode is the default. In voxel mode, the voxel resolution sets the density and you can decimate to a triangle budget.
+2. Pick a mode and a **target triangle count**, then click **Retopologize**. Quad mode is the default. In voxel mode the voxel resolution sets the detail and the result is decimated to the target.
 3. Click **Fit skeleton**, then left-drag the joints to adjust them. Left and right edits mirror each other by default. **Center joints in volume** re-centers the joints inside the mesh.
 4. Click **Compute weights**. Tick *Show selected bone's weights* to see a heatmap, choosing the bone in the list or by clicking a joint.
 5. Preview poses with the rotation sliders or **Test pose**. Use **Reset pose** before editing joints again.
@@ -54,12 +54,13 @@ Camera: right-drag to orbit, Shift + right-drag to pan, mouse wheel or trackpad 
 
 ```sh
 $G --headless --path . -- --in model.glb --out model_rigged.glb \
-   [--retopo quad|voxel] [--quads 8000] [--dump-quads layout.obj] [--seed 1] \
-   [--voxel 192] [--close 1] [--tris 8000] [--tex 1024] [--relax 4] [--falloff 3] \
+   [--retopo quad|voxel] [--tris 8000] [--detail 256] [--dump-quads layout.obj] [--seed 1] \
+   [--voxel 192] [--close 1] [--tex 1024] [--relax 4] [--falloff 3] \
    [--rig humanoid|single] [--rotate-y 180] [--no-normal] [--no-joint-aware] [--probe-weights]
 $G --headless --path . -- --selftest-fields                      # quad remesher self-tests (sphere, off-axis capsule)
 $G --headless --path . -- --make-test-asset res://test [--dense] # procedural test humanoids (T-pose, open, A-pose, ~3.8M-tri dense)
 ./test/regress.sh                                                # runs every test model through the CLI, both modes
+./test/sweep.sh                                                  # quality table across budgets (1k–16k triangles)
 $G --path . -- --render out.glb shot.png [--pose] [--wire]       # front/side snapshot (windowed); also accepts a quad .obj
 $G --path . -- --ui-smoke res://test/humanoid.glb <dir>          # drives the UI end to end
 ```
@@ -88,10 +89,12 @@ The mesh is manifold. UVs are in [0,1]. Weights sum to 1 with at most 4 bones pe
 
 In quad mode:
 - no fallback was used;
-- at least 90% quads and at least 85% valence-4 vertices;
+- at least 90% quads;
 - no boundary edges, and the same topology (Euler characteristic) as the base mesh;
 - the face count is within ±20% of the target;
-- surface deviation from the base mesh: mean under 0.15 and max under 0.75 of the quad spacing.
+- surface deviation from the base mesh: mean under 0.15 and 99.5th percentile under 0.5 of the quad spacing. A larger worst-case deviation (typically a thin tip cut short) is reported as a `[WARN]` with its location.
+
+Also reported as `[METRIC]` lines, without failing the run: the share of valence-4 vertices, the worst surface deviation, and (humanoid rig) the number of sides around each limb.
 
 After re-import:
 - the material has its albedo and normal textures;

@@ -12,7 +12,8 @@ public sealed class PipelineSettings
     public RetopoMode Mode = RetopoMode.Quad;
     /// <summary>Output triangle budget for both modes (quad mode targets half as many quads). In voxel mode 0 = no decimation.</summary>
     public int TargetTris = 8000;
-    public int TargetQuads => Math.Max(1, TargetTris / 2);
+    /// <summary>Quad mode needs a positive budget; 0 (meaning "no decimation" in voxel mode) falls back to the default.</summary>
+    public int TargetQuads => TargetTris > 0 ? Math.Max(1, TargetTris / 2) : 4000;
     /// <summary>Minimum base-mesh resolution (cells on the longest axis) in quad mode, so low budgets still get a fine
     /// surface for the normal-map bake and the fidelity reference.</summary>
     public int DetailRes = 256;

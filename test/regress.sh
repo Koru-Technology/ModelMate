@@ -12,10 +12,12 @@ run() {
   (( rc != 0 )) && fail=1
 }
 run --selftest-fields
-for f in humanoid humanoid_open humanoid_apose humanoid_dense; do
-  run --in res://test/$f.glb --out res://test/out_reg.glb                      # quad mode (default, 8000 quads)
+for f in humanoid humanoid_open humanoid_apose humanoid_lumpy humanoid_dense; do
+  run --in res://test/$f.glb --out res://test/out_reg.glb                      # quad mode (default, 8000 triangles)
 done
 run --in res://test/humanoid.glb --out res://test/out_reg.glb --quads 3000
+run --in res://test/humanoid_lumpy.glb --out res://test/out_reg.glb --tris 1000   # mobile budget
+[[ -f test/lil_gug.glb ]] && run --in res://test/lil_gug.glb --out res://test/out_reg.glb --tris 2000 --rig single
 run --in res://test/humanoid.glb --out res://test/out_reg.glb --rig single
 run --in res://test/humanoid.glb --out res://test/out_reg.glb --retopo voxel --tris 8000
 run --in res://test/humanoid_open.glb --out res://test/out_reg.glb --retopo voxel --voxel 128 --tris 3000

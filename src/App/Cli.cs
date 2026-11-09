@@ -73,6 +73,7 @@ public static class Cli
             Verify.PreExport(cl, p.Welded, p.Split, p.SplitOrigin, p.SplitBones, p.SplitWeights, p.AppliedTriBudget);
             Verify.BakedTexture(cl, p.AlbedoRgba);
             Verify.QuadMesh(cl, p);
+            Verify.LimbSides(cl, p);
 
             var name = System.IO.Path.GetFileNameWithoutExtension(output);
             var root = p.BuildScene(name);

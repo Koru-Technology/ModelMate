@@ -504,6 +504,7 @@ public partial class Main : Node3D
             Verify.PreExport(cl, _p.Welded, _p.Split, _p.SplitOrigin, _p.SplitBones, _p.SplitWeights, _p.AppliedTriBudget);
             Verify.BakedTexture(cl, _p.AlbedoRgba);
             Verify.QuadMesh(cl, _p);
+            Verify.LimbSides(cl, _p);
             var root = _p.BuildScene(System.IO.Path.GetFileNameWithoutExtension(outPath));
             Exporter.ExportGlb(root, outPath);
             root.Free();
