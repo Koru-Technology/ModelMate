@@ -10,7 +10,8 @@ namespace ModelMate.App;
 /// </summary>
 public static class Render
 {
-    public static async Task<int> Run(Node host, string inPath, string outPath, bool pose, bool wire)
+    public static async Task<int> Run(Node host, string inPath, string outPath, bool pose, bool wire, string views = "front,side",
+        string posePreset = null, string poseName = null)
     {
         Node3D scene;
         if (inPath.EndsWith(".obj", System.StringComparison.OrdinalIgnoreCase))
@@ -29,6 +30,16 @@ public static class Render
 
         var skel = scene.FindChildren("*", "Skeleton3D", true, false).OfType<Skeleton3D>().FirstOrDefault();
         if (pose && skel != null) ApplyTestPose(skel);
+        if (posePreset != null && skel != null)
+        {
+            var rots = ModelMate.Core.RigPreset.PoseRotations(ModelMate.Core.RigPreset.Load(ProjectSettings.GlobalizePath(posePreset)), poseName);
+            foreach (var (bone, rot) in rots)
+            {
+                int i = skel.FindBone(bone);
+                if (i < 0) { GD.PrintErr($"pose: no bone {bone}"); continue; }
+                skel.SetBonePoseRotation(i, (skel.GetBoneRest(i).Basis * rot).GetRotationQuaternion());
+            }
+        }
 
         var aabb = new Aabb();
         bool first = true;
@@ -48,22 +59,28 @@ public static class Render
 
         var center = aabb.GetCenter();
         float r = aabb.Size.Length() * 0.62f;
-        var images = new Image[2];
-        var dirs = new[] { Vector3.Back, Vector3.Right };
+        var named = new System.Collections.Generic.Dictionary<string, Vector3>
+        {
+            ["front"] = Vector3.Back, ["side"] = Vector3.Right, ["back"] = Vector3.Forward,
+            ["left"] = Vector3.Left, ["top"] = Vector3.Up, ["bottom"] = Vector3.Down,
+            ["three"] = new Vector3(0.7f, 0.35f, 0.7f).Normalized(),
+        };
+        var dirs = views.Split(',').Select(x => named[x.Trim()]).ToArray();
+        var images = new Image[dirs.Length];
         var cam = new Camera3D { Fov = 40 };
         host.AddChild(cam);
         cam.MakeCurrent();
-        for (int v = 0; v < 2; v++)
+        for (int v = 0; v < dirs.Length; v++)
         {
             cam.Position = center + dirs[v] * r * 1.6f;
-            cam.LookAt(center, Vector3.Up);
+            var up = System.MathF.Abs(dirs[v].Y) > 0.9f ? Vector3.Back : Vector3.Up;
+            cam.LookAt(center, up);
             for (int f = 0; f < 4; f++) await host.ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
             images[v] = host.GetViewport().GetTexture().GetImage();
         }
         int w = images[0].GetWidth(), h = images[0].GetHeight();
-        var outImg = Image.CreateEmpty(w * 2, h, false, images[0].GetFormat());
-        outImg.BlitRect(images[0], new Rect2I(0, 0, w, h), Vector2I.Zero);
-        outImg.BlitRect(images[1], new Rect2I(0, 0, w, h), new Vector2I(w, 0));
+        var outImg = Image.CreateEmpty(w * images.Length, h, false, images[0].GetFormat());
+        for (int v = 0; v < images.Length; v++) outImg.BlitRect(images[v], new Rect2I(0, 0, w, h), new Vector2I(w * v, 0));
         outImg.SavePng(ProjectSettings.GlobalizePath(outPath));
         GD.Print($"Rendered {outPath}");
         return 0;

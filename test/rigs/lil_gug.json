@@ -1,0 +1,246 @@
+{
+  "name": "lil_gug",
+  "description": "Round-bodied creature (Kirby-like): two body bones for squash and wobble, stubby arms, feet at the bottom, optional horns (delete them if your creature has none). Joint positions are fractions of the model\u0027s bounding box. Feet hang off Root so the body can rock on planted feet.",
+  "bones": [
+    {
+      "name": "Root",
+      "head": [
+        0.5,
+        0,
+        0.511
+      ],
+      "tail": [
+        0.5,
+        0.139,
+        0.44069
+      ],
+      "tailChild": "Body",
+      "deform": false
+    },
+    {
+      "name": "Body",
+      "parent": "Root",
+      "head": [
+        0.5,
+        0.139,
+        0.44069
+      ],
+      "tail": [
+        0.5,
+        0.478,
+        0.44069
+      ],
+      "tailChild": "BodyTop",
+      "deform": true,
+      "center": "Spine"
+    },
+    {
+      "name": "BodyTop",
+      "parent": "Body",
+      "head": [
+        0.5,
+        0.478,
+        0.44069
+      ],
+      "tail": [
+        0.5,
+        0.827,
+        0.44069
+      ],
+      "deform": true,
+      "center": "Spine"
+    },
+    {
+      "name": "LeftArm",
+      "parent": "BodyTop",
+      "head": [
+        0.8535,
+        0.498,
+        0.511
+      ],
+      "tail": [
+        0.9862,
+        0.4264,
+        0.511
+      ],
+      "deform": true,
+      "center": "Limb"
+    },
+    {
+      "name": "RightArm",
+      "parent": "BodyTop",
+      "head": [
+        0.1465,
+        0.498,
+        0.511
+      ],
+      "tail": [
+        0.0138,
+        0.4264,
+        0.511
+      ],
+      "deform": true,
+      "center": "Limb"
+    },
+    {
+      "name": "LeftFoot",
+      "parent": "Root",
+      "head": [
+        0.6324,
+        0.252,
+        0.367
+      ],
+      "tail": [
+        0.65,
+        0.0878,
+        0.0541
+      ],
+      "deform": true
+    },
+    {
+      "name": "RightFoot",
+      "parent": "Root",
+      "head": [
+        0.3676,
+        0.252,
+        0.367
+      ],
+      "tail": [
+        0.35,
+        0.0878,
+        0.0541
+      ],
+      "deform": true
+    },
+    {
+      "name": "LeftHorn",
+      "parent": "BodyTop",
+      "head": [
+        0.6855,
+        0.806,
+        0.475
+      ],
+      "tail": [
+        0.7123,
+        0.991,
+        0.5712
+      ],
+      "deform": true
+    },
+    {
+      "name": "RightHorn",
+      "parent": "BodyTop",
+      "head": [
+        0.3145,
+        0.806,
+        0.475
+      ],
+      "tail": [
+        0.2877,
+        0.991,
+        0.5712
+      ],
+      "deform": true
+    }
+  ],
+  "poses": {
+    "waddle_left": [
+      {
+        "bone": "LeftFoot",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "deg": 30
+      },
+      {
+        "bone": "Body",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "deg": 10
+      },
+      {
+        "bone": "RightArm",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "deg": 30
+      }
+    ],
+    "waddle_right": [
+      {
+        "bone": "RightFoot",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "deg": 30
+      },
+      {
+        "bone": "Body",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "deg": -10
+      },
+      {
+        "bone": "LeftArm",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "deg": 30
+      }
+    ],
+    "arm_flap": [
+      {
+        "bone": "LeftArm",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "deg": 45
+      },
+      {
+        "bone": "RightArm",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "deg": 45
+      }
+    ],
+    "lean_forward": [
+      {
+        "bone": "Body",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "deg": 15
+      },
+      {
+        "bone": "BodyTop",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "deg": 10
+      }
+    ]
+  }
+}

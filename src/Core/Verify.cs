@@ -106,7 +106,7 @@ public static class Verify
     /// </summary>
     public static void LimbSides(CheckList cl, Pipeline p)
     {
-        if (p.Rig == null || p.WeldedBones == null || p.S.Rig != "humanoid") return;
+        if (p.Rig == null || p.WeldedBones == null || !IsHumanoid(p.Rig)) return;
         var m = p.Welded;
         var edges = Quad.QuadStats.RealEdges(m);   // all edges when TriFlags is null (voxel mode)
         float W(int v, int bone)
@@ -160,6 +160,11 @@ public static class Verify
         cl.Check(sum > 0 && distinct > 1, $"baked texture non-empty ({distinct}+ distinct colors)");
     }
 
+    /// <summary>A rig counts as humanoid when it has the core SkeletonProfileHumanoid bones (extra bones allowed).</summary>
+    public static bool IsHumanoid(RigSkeleton r) => r != null &&
+        new[] { "Hips", "Spine", "Head", "LeftUpperArm", "LeftLowerArm", "RightUpperArm", "RightLowerArm", "LeftUpperLeg", "RightUpperLeg" }
+            .All(n => r.Find(n) >= 0);
+
     /// <summary>Re-imports the exported glb, poses LeftUpperArm, CPU-skins and checks deformation.</summary>
     public static void RoundTrip(CheckList cl, string path, bool humanoid, bool expectNormalMap = false)
     {
@@ -188,22 +193,23 @@ public static class Verify
                 string[] required = { "Hips", "Spine", "Chest", "UpperChest", "Neck", "Head", "LeftUpperArm", "LeftLowerArm",
                     "LeftHand", "RightUpperArm", "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "RightFoot" };
                 var miss = required.Where(r => !names.Contains(r)).ToList();
-                cl.Check(miss.Count == 0, $"humanoid bone names present (missing: {string.Join(",", miss)})");
-                if (miss.Count > 0) return;
+                if (miss.Count > 0) cl.Warn($"humanoid rig is missing standard bones ({string.Join(", ", miss)}); retargeted animations won't drive them");
 
                 // every bone must exist in SkeletonProfileHumanoid with a matching parent (for BoneMap retargeting)
                 var profile = new SkeletonProfileHumanoid();
                 var bad = new List<string>();
+                var extra = new List<string>();
                 for (int i = 0; i < nb; i++)
                 {
                     int pi = profile.FindBone(names[i]);
-                    if (pi < 0) { bad.Add(names[i] + "(unknown)"); continue; }
+                    if (pi < 0) { extra.Add(names[i]); continue; }   // extra bones (e.g. a tail) don't break retargeting
                     int sp = skel.GetBoneParent(i);
                     string skelParent = sp >= 0 ? names[sp] : "";
                     string profParent = profile.GetBoneParent(pi).ToString();
                     if (skelParent != profParent) bad.Add($"{names[i]}(parent {skelParent} != {profParent})");
                 }
                 cl.Check(bad.Count == 0, $"matches SkeletonProfileHumanoid hierarchy ({string.Join(", ", bad)})");
+                if (extra.Count > 0) cl.Metric($"bones outside SkeletonProfileHumanoid (ignored by retargeting): {string.Join(", ", extra)}");
             }
 
             var rest = new Transform3D[nb];
@@ -213,10 +219,8 @@ public static class Verify
                 rest[i] = (p >= 0 ? rest[p] : Transform3D.Identity) * skel.GetBoneRest(i);
             }
 
-            if (humanoid)
+            // Bone orientation convention (any rig): a bone with exactly one child points its local +Y at it.
             {
-                int lua = names.IndexOf("LeftUpperArm"), lla = names.IndexOf("LeftLowerArm");
-                cl.Check(rest[lua].Origin.X > 0, $"LeftUpperArm on +X side (x={rest[lua].Origin.X:F3})");
                 int checkedBones = 0, badDir = 0;
                 for (int i = 0; i < nb; i++)
                 {
@@ -229,6 +233,18 @@ public static class Verify
                 }
                 cl.Check(badDir == 0, $"bone local +Y points at child ({checkedBones} checked, {badDir} bad)");
             }
+            // Left/right convention (any rig with Left*/Right* bones): Left is on +X relative to its Right partner.
+            {
+                var wrong = new List<string>();
+                for (int i = 0; i < nb; i++)
+                {
+                    if (!names[i].StartsWith("Left")) continue;
+                    int r = names.IndexOf("Right" + names[i][4..]);
+                    if (r >= 0 && rest[i].Origin.X <= rest[r].Origin.X) wrong.Add(names[i]);
+                }
+                if (names.Any(n => n.StartsWith("Left")))
+                    cl.Check(wrong.Count == 0, $"Left* bones are on +X of their Right* partners ({string.Join(", ", wrong)})");
+            }
 
             // CPU skinning
             var arr = mi.Mesh.SurfaceGetArrays(0);
@@ -237,81 +253,95 @@ public static class Verify
             var vw = arr[(int)Mesh.ArrayType.Weights].AsFloat32Array();
             int wpv = vb.Length / verts.Length;
             var skin = mi.Skin;
-            var bindBone = new int[skin.GetBindCount()];
-            for (int b = 0; b < bindBone.Length; b++)
+            int nbind = skin.GetBindCount();
+            var bindBone = new int[nbind];
+            var bindPose = new Transform3D[nbind];
+            for (int b = 0; b < nbind; b++)
             {
                 var bn = skin.GetBindName(b);
                 bindBone[b] = bn != "" ? names.IndexOf(bn) : skin.GetBindBone(b);
+                bindPose[b] = skin.GetBindPose(b);
             }
-
-            Vector3[] Skin(Transform3D[] global)
+            Vector3[] SkinWith(Transform3D[] global)
             {
-                var o = new Vector3[verts.Length];
-                for (int v = 0; v < verts.Length; v++)
-                {
-                    Vector3 acc = Vector3.Zero;
-                    for (int k = 0; k < wpv; k++)
-                    {
-                        float w = vw[v * wpv + k];
-                        if (w == 0) continue;
-                        int bind = vb[v * wpv + k];
-                        acc += (global[bindBone[bind]] * skin.GetBindPose(bind) * verts[v]) * w;
-                    }
-                    o[v] = acc;
-                }
-                return o;
+                var x = new Transform3D[nbind];
+                for (int b = 0; b < nbind; b++) x[b] = global[bindBone[b]] * bindPose[b];
+                return Skinning.Skin(verts, vb, vw, wpv, x);
             }
+            Transform3D[] Posed(Func<int, Basis> rot) =>
+                Skinning.Globals(nb, skel.GetBoneParent, i => skel.GetBoneRest(i) * new Transform3D(rot(i), Vector3.Zero));
 
-            var restSkinned = Skin(rest);
+            var restSkinned = SkinWith(rest);
             float maxRestErr = 0;
             for (int v = 0; v < verts.Length; v++) maxRestErr = MathF.Max(maxRestErr, (restSkinned[v] - verts[v]).Length());
             var aabb = new Aabb(verts[0], Vector3.Zero);
             foreach (var p in verts) aabb = aabb.Expand(p);
             float H = aabb.Size.Y;
             cl.Check(maxRestErr < 1e-3f * H, $"rest pose reproduces mesh (max err {maxRestErr:E2})");
-            if (!humanoid) return;
 
-            // pose: rotate LeftUpperArm 60° about its local Z
-            int target = names.IndexOf("LeftUpperArm");
-            var posed = new Transform3D[nb];
-            for (int i = 0; i < nb; i++)
+            // Generic per-bone test: rotating one bone moves part of the mesh, and nothing outside the region weighted to
+            // that bone or its descendants.
             {
-                int p = skel.GetBoneParent(i);
-                var local = skel.GetBoneRest(i);
-                if (i == target) local = local * new Transform3D(new Basis(Vector3.Back, Mathf.DegToRad(60)), Vector3.Zero);
-                posed[i] = (p >= 0 ? posed[p] : Transform3D.Identity) * local;
-            }
-            var posedSkinned = Skin(posed);
-
-            float elbowX = rest[names.IndexOf("LeftLowerArm")].Origin.X;
-            float rElbowX = rest[names.IndexOf("RightLowerArm")].Origin.X;
-            var leftArm = new List<float>(); float rightMax = 0, feetMax = 0;
-            for (int v = 0; v < verts.Length; v++)
-            {
-                float d = (posedSkinned[v] - restSkinned[v]).Length();
-                if (verts[v].X > elbowX) leftArm.Add(d);
-                if (verts[v].X < rElbowX) rightMax = MathF.Max(rightMax, d);
-                if (verts[v].Y < aabb.Position.Y + 0.1f * H) feetMax = MathF.Max(feetMax, d);
-            }
-            leftArm.Sort();
-            float med = leftArm.Count > 0 ? leftArm[leftArm.Count / 2] : 0;
-            cl.Check(med > 0.05f * H, $"posed: left forearm/hand moves (median {med:F3}, n={leftArm.Count})");
-            cl.Check(rightMax < 0.005f * H, $"posed: right arm stays put (max {rightMax:E2})");
-            cl.Check(feetMax < 0.005f * H, $"posed: feet stay put (max {feetMax:E2})");
-
-            // seam check: vertices sharing a position must stay together when posed
-            var byPos = new Dictionary<Vector3, int>();
-            float seamMax = 0; int seamPairs = 0;
-            for (int v = 0; v < verts.Length; v++)
-            {
-                if (byPos.TryGetValue(verts[v], out int f))
+                var influenced = new bool[nbind];
+                var problems = new List<string>();
+                int tested = 0;
+                for (int b = 0; b < nb; b++)
                 {
-                    seamPairs++;
-                    seamMax = MathF.Max(seamMax, (posedSkinned[v] - posedSkinned[f]).Length());
+                    int bind = Array.IndexOf(bindBone, b);
+                    if (bind < 0) continue;
+                    // region: vertices with weight on b or any descendant
+                    var region = new bool[verts.Length];
+                    var inSub = new bool[nb];
+                    for (int i = 0; i < nb; i++) { int q = i; while (q >= 0 && q != b) q = skel.GetBoneParent(q); inSub[i] = q == b; }
+                    int regionCount = 0;
+                    for (int v = 0; v < verts.Length; v++)
+                        for (int k = 0; k < wpv; k++)
+                            if (vw[v * wpv + k] > 0 && inSub[bindBone[vb[v * wpv + k]]]) { region[v] = true; regionCount++; break; }
+                    if (regionCount == 0) continue;   // e.g. non-deform root
+                    tested++;
+                    var posedSk = SkinWith(Posed(i => i == b ? new Basis(Vector3.Right, Mathf.DegToRad(30)) : Basis.Identity));
+                    int moved = 0; float outside = 0;
+                    for (int v = 0; v < verts.Length; v++)
+                    {
+                        float d = (posedSk[v] - restSkinned[v]).Length();
+                        if (region[v]) { if (d > 1e-3f * H) moved++; }
+                        else outside = MathF.Max(outside, d);
+                    }
+                    if (moved == 0) problems.Add($"{names[b]} moves nothing");
+                    if (outside > 1e-5f * H) problems.Add($"{names[b]} moves vertices outside its region ({outside:E1})");
                 }
-                else byPos[verts[v]] = v;
+                cl.Check(problems.Count == 0, $"posed: each of {tested} weighted bones moves only its own region ({string.Join("; ", problems)})");
+                // seams under a pose that bends every bone at once
+                var all = SkinWith(Posed(i => new Basis(Vector3.Right, Mathf.DegToRad(20))));
+                var (pairs, gap) = Skinning.SeamGap(verts, all);
+                cl.Check(gap < 1e-4f * MathF.Max(1f, H), $"posed: seams stay closed with every bone bent ({pairs} pairs, max gap {gap:E2})");
             }
-            cl.Check(seamMax < 1e-4f, $"posed: seams stay closed ({seamPairs} pairs, max gap {seamMax:E2})");
+
+            if (humanoid)
+            {
+                int lua = names.IndexOf("LeftUpperArm");
+                cl.Check(rest[lua].Origin.X > 0, $"LeftUpperArm on +X side (x={rest[lua].Origin.X:F3})");
+                // pose: rotate LeftUpperArm 60° about its local Z
+                int target = lua;
+                var posed = Skinning.Globals(nb, skel.GetBoneParent, i =>
+                    i == target ? skel.GetBoneRest(i) * new Transform3D(new Basis(Vector3.Back, Mathf.DegToRad(60)), Vector3.Zero) : skel.GetBoneRest(i));
+                var posedSkinned = SkinWith(posed);
+                float elbowX = rest[names.IndexOf("LeftLowerArm")].Origin.X;
+                float rElbowX = rest[names.IndexOf("RightLowerArm")].Origin.X;
+                var leftArm = new List<float>(); float rightMax = 0, feetMax = 0;
+                for (int v = 0; v < verts.Length; v++)
+                {
+                    float d = (posedSkinned[v] - restSkinned[v]).Length();
+                    if (verts[v].X > elbowX) leftArm.Add(d);
+                    if (verts[v].X < rElbowX) rightMax = MathF.Max(rightMax, d);
+                    if (verts[v].Y < aabb.Position.Y + 0.1f * H) feetMax = MathF.Max(feetMax, d);
+                }
+                leftArm.Sort();
+                float med = leftArm.Count > 0 ? leftArm[leftArm.Count / 2] : 0;
+                cl.Check(med > 0.05f * H, $"posed: left forearm/hand moves (median {med:F3}, n={leftArm.Count})");
+                cl.Check(rightMax < 0.005f * H, $"posed: right arm stays put (max {rightMax:E2})");
+                cl.Check(feetMax < 0.005f * H, $"posed: feet stay put (max {feetMax:E2})");
+            }
         }
         finally { root.Free(); }
     }

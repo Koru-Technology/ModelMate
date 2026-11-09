@@ -26,7 +26,7 @@
 
 A small Godot 4.7 (C#) tool. It turns an unrigged static glTF (a dense sculpt or AI-generated mesh) into a game-ready rigged `.glb`:
 
-**import → retopologize (quad or voxel) → fit skeleton → auto skin weights → UV unwrap → bake albedo and normal maps → export**
+**import → fit skeleton (humanoid, creature or your own) → retopologize (quad or voxel) → auto skin weights → UV unwrap → bake albedo and normal maps → export**
 
 Everything runs inside Godot, with no Blender or other external tools. With the humanoid rig, bone names and parent bones match Godot's `SkeletonProfileHumanoid`, which is what humanoid retargeting expects. To retarget, open the `.glb` in your game project's import dialog and set Skeleton3D → Retarget → Bone Map → `SkeletonProfileHumanoid`.
 
@@ -42,8 +42,8 @@ $G --path .                      # UI
 
 **UI workflow** (right-hand panel, top to bottom):
 1. Import a `.glb` or `.gltf`.
-2. Pick a mode and a **target triangle count**, then click **Retopologize**. Quad mode is the default. In voxel mode the voxel resolution sets the detail and the result is decimated to the target.
-3. Click **Fit skeleton**, then left-drag the joints to adjust them. Left and right edits mirror each other by default. **Center joints in volume** re-centers the joints inside the mesh.
+2. **Skeleton.** Pick a rig preset and click **Fit skeleton**, then left-drag joints to adjust them (left/right edits mirror by default). Edit the skeleton with **Add child**, **Delete**, **Rename**, **Parent**, **Deforms mesh** and **Symmetrize** (copies every `Left*` bone onto its `Right*` partner). **Save** stores it as a preset you can reuse on other models; **Load preset file…** fits a preset `.json` from anywhere.
+3. Pick a mode and a **target triangle count**, then click **Retopologize**. Quad mode is the default. In voxel mode the voxel resolution sets the detail and the result is decimated to the target.
 4. Click **Compute weights**. Tick *Show selected bone's weights* to see a heatmap, choosing the bone in the list or by clicking a joint.
 5. Preview poses with the rotation sliders or **Test pose**. Use **Reset pose** before editing joints again.
 6. Click **Export .glb**. This unwraps the UVs, bakes the maps, writes the file, then re-imports it and runs the checks listed below. The results appear in the log.
@@ -56,19 +56,30 @@ Camera: right-drag to orbit, Shift + right-drag to pan, mouse wheel or trackpad 
 $G --headless --path . -- --in model.glb --out model_rigged.glb \
    [--retopo quad|voxel] [--tris 8000] [--detail 256] [--dump-quads layout.obj] [--seed 1] \
    [--voxel 192] [--close 1] [--tex 1024] [--relax 4] [--falloff 3] \
-   [--rig humanoid|single] [--rotate-y 180] [--no-normal] [--no-joint-aware] [--probe-weights]
+   [--rig humanoid|single|blob_biped|preset.json] [--save-rig out.json] \
+   [--rotate-y 180] [--no-normal] [--no-joint-aware] [--probe-weights]
 $G --headless --path . -- --selftest-fields                      # quad remesher self-tests (sphere, off-axis capsule)
 $G --headless --path . -- --make-test-asset res://test [--dense] # procedural test humanoids (T-pose, open, A-pose, ~3.8M-tri dense)
 ./test/regress.sh                                                # runs every test model through the CLI, both modes
 ./test/sweep.sh                                                  # quality table across budgets (1k–16k triangles)
-$G --path . -- --render out.glb shot.png [--pose] [--wire]       # front/side snapshot (windowed); also accepts a quad .obj
+$G --path . -- --render out.glb shot.png [--views front,side,back,top,bottom,three] [--wire] \
+   [--pose | --pose-preset rigs/blob_biped.json waddle_left]     # snapshot (windowed); also accepts a quad .obj
 $G --path . -- --ui-smoke res://test/humanoid.glb <dir>          # drives the UI end to end
 ```
+
+## Rig presets
+| Preset | For | Bones |
+|---|---|---|
+| `humanoid` | T- or A-pose characters; names and hierarchy match Godot's `SkeletonProfileHumanoid` | 23 (no fingers, eyes or jaw) |
+| `blob_biped` | Round creatures (Kirby-like): body, stubby arms, feet at the bottom, horns | 9; delete the horns if there are none, add a tail with **Add child** |
+| `single` | Props | 1 |
+
+JSON presets (`rigs/*.json` built in, user presets in Godot's `user://rigs`) store joints as fractions of the model's bounding box, so a preset refits to any model of that kind. Built-in presets re-center joints inside the mesh after fitting; saved presets reload your joints exactly (`"autoCenter": false`). A preset can also carry named test poses (`"poses"`), used by `--pose-preset` and the deformation report. `test/rigs/lil_gug.json` is an example fitted to a real creature.
 
 ## What the input should look like
 - One character, upright: +Y up, **facing +Z**, character's left on +X. This is the glTF/Godot convention. If a model faces -Z, tick *Model faces -Z* before importing, or pass `--rotate-y 180`. Otherwise left and right get swapped, and the checks **can't detect this**, because they only compare the rig with itself.
 - For the humanoid rig: T-pose or A-pose. The arm angle is detected from the bounding box.
-- Use `--rig single` (or *Single bone* in the UI) for props.
+- Use `--rig blob_biped` for round creatures and `--rig single` for props, or build your own skeleton in the UI and save it as a preset.
 - Vertex colours are baked as the glTF spec says (they multiply the base colour), even where Godot's own importer turns them off.
 
 ## How it works
@@ -79,7 +90,7 @@ $G --path . -- --ui-smoke res://test/humanoid.glb <dir>          # drives the UI
 | Base mesh | `SurfaceNets`, then `MeshCleanup` (splits non-manifold edges and vertices), then `Relax` (smoothing along the surface plus guarded snapping to the source). This closed, evenly dense surface feeds both remesh modes and the normal-map bake. |
 | Quad remesh (default) | `Quad/`: Instant Meshes port. A multiresolution hierarchy, a 4-RoSy orientation field and a 4-PoSy position field solved coarse to fine, then graph and face extraction, triangulation along each quad's shorter diagonal, hole filling and quad-preserving reprojection. If the result isn't closed and manifold or is under 70% quads, it falls back to voxel mode and the export checks fail, so a fallback is never silent. |
 | Voxel remesh | The base mesh decimated by `QemDecimator`: quadric-error edge collapse with manifold and flip guards, up to 6× more detail kept near joints, and an edge-length cap. |
-| Skeleton | `HumanoidTemplate`: fits to the bounding box, then centers joints inside the mesh by casting rays through it. Each bone's +Y points at its child. |
+| Skeleton | `RigPreset` fits a preset to the bounding box (`HumanoidTemplate` for the humanoid), then centers joints inside the mesh by casting rays through it. `RigEdit` does the structural edits and keeps the skeleton valid (one root, parents before children, unique names, no cycles). Each bone's +Y points at its child. |
 | Weights | `VoxelGeodesicWeights`: distance from each bone is measured *through the mesh interior* (Dijkstra over voxels), minus the bone's local thickness. Weight = 1/d^falloff. Weights are then smoothed, cut to the top 4 bones per vertex and normalized. They're computed on the welded mesh before unwrapping, so they're identical across UV seams. |
 | UVs and bake | `UvUnwrap` (xatlas via `ArrayMesh.LightmapUnwrap`) and `TextureBaker`. Colour: a ray along the normal onto opaque, outward-facing source triangles, so transparent overlay shells and the backs of overlapping internal shells are ignored. Normals: from the clean base mesh, which avoids artifacts where source shells overlap. Detail finer than one base-mesh voxel isn't captured. Normal maps are tangent-space and OpenGL-style, using MikkTSpace tangents that are exported with the mesh. |
 | Export | `RigBuilder` and `Exporter` (`GltfDocument`), then `Verify.RoundTrip`. |
@@ -96,21 +107,21 @@ In quad mode:
 
 Also reported as `[METRIC]` lines, without failing the run: the share of valence-4 vertices, the worst surface deviation, and (humanoid rig) the number of sides around each limb.
 
-After re-import:
+After re-import, for any rig:
 - the material has its albedo and normal textures;
-- the rest pose reproduces the mesh.
+- the rest pose reproduces the mesh;
+- each bone's +Y points at its child, and `Left*` bones sit on +X of their `Right*` partners;
+- rotating any one bone moves part of the mesh and nothing outside the region weighted to it and its children;
+- seams stay closed with every bone bent at once.
 
-Humanoid rig only:
-- the bone names and parent bones match `SkeletonProfileHumanoid`;
-- `LeftUpperArm` is on +X;
-- each bone's +Y points at its child;
-- rotating `LeftUpperArm` moves the left arm but not the right arm or the feet;
-- seams stay closed under the pose.
+Humanoid rigs additionally:
+- the parent bones match `SkeletonProfileHumanoid` (extra bones such as a tail are listed, not failed);
+- rotating `LeftUpperArm` moves the left arm but not the right arm or the feet.
 
 ## Limitations
 - Quad mode spaces edges uniformly. Its edge loops follow surface curvature, not the skeleton, and there are no extra loops at joints yet.
 - Features thinner than about one quad, or about two voxels in voxel mode (fingers, ears, horn tips), can merge or disappear.
 - Parts that are just single-sided surfaces with nothing inside (capes, hair cards) end up as thin closed shells.
-- Only the humanoid and single-bone rigs exist. The humanoid template has no finger, eye or jaw bones.
+- Weights are automatic only; there's no weight painting. The humanoid template has no finger, eye or jaw bones.
 - Only albedo and normal maps are baked. Roughness and metallic maps are not.
 - `LightmapUnwrap` needs an editor (tools) build, so run ModelMate through the Godot editor binary. Don't export it as a standalone app.

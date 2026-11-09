@@ -25,7 +25,7 @@ public sealed class PipelineSettings
     public float Falloff = 3f;      // weight = 1/d^falloff
     public int SmoothPasses = 3;
     public int TexSize = 1024;
-    public string Rig = "humanoid"; // humanoid | single
+    public string Rig = "humanoid"; // preset name (humanoid, single, blob_biped, …) or a path to a preset .json
     public float MaxEdgeFrac = 0.04f; // decimation max edge length, fraction of bbox diagonal
     public bool JointAware = true;    // keep more triangles near joints when decimating
     public bool NormalMap = true;     // bake a tangent-space normal map from the source
@@ -46,6 +46,7 @@ public sealed class Pipeline
     public VoxelGrid Grid;
     public MeshData Welded;
     public RigSkeleton Rig;
+    public RigPreset.PresetDto RigPresetData;   // JSON preset the rig came from (null for code presets); carries named poses
     public int[] WeldedBones;
     public float[] WeldedWeights;
     public MeshData Split;
@@ -190,7 +191,7 @@ public sealed class Pipeline
         if (targetTris > 0 && m.TriCount > targetTris)
         {
             float[] vw = null;
-            if (S.JointAware && S.Rig == "humanoid")
+            if (S.JointAware && (Rig != null || S.Rig == "humanoid"))
             {
                 var rig = Rig ?? HumanoidTemplate.Fit(m.Bounds(), SourceBvh, null); // provisional if none yet
                 vw = JointWeights(m, rig);
@@ -227,7 +228,7 @@ public sealed class Pipeline
     public void FitSkeleton()
     {
         var box = Source.Mesh.Bounds();   // source bounds: the skeleton can be fitted before retopology
-        Rig = S.Rig == "single" ? HumanoidTemplate.Single(box) : HumanoidTemplate.Fit(box, SourceBvh, L);
+        Rig = RigPreset.Fit(S.Rig, box, SourceBvh, L, out RigPresetData);
         L($"Skeleton: {Rig.Bones.Count} bones");
     }
 

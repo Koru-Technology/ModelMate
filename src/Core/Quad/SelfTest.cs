@@ -12,6 +12,47 @@ public static class SelfTest
         Capsule(cl, log);
     }
 
+    /// <summary>Rig editing and preset round trip (no mesh needed).</summary>
+    public static void Rig(CheckList cl, Action<string> log)
+    {
+        var box = new Aabb(new Vector3(-0.5f, 0, -0.4f), new Vector3(1.1f, 0.97f, 0.83f));
+        var s = RigPreset.Fit("blob_biped", box, null, log, out var dto);
+        cl.Check(RigEdit.Validate(s).Count == 0 && s.Bones.Count == 9, $"rig: blob_biped fits ({s.Bones.Count} bones)");
+        // edits
+        int tail = RigEdit.AddChild(s, s.Find("Root"), "Tail", 0.05f);
+        int tip = RigEdit.AddChild(s, tail, "TailTip", 0.05f);
+        int le = RigEdit.AddChild(s, s.Find("LeftArm"), "LeftHand", 0.05f);
+        RigEdit.Remove(s, s.Find("RightArm"));
+        int created = RigEdit.Symmetrize(s, box.GetCenter().X);
+        cl.Check(created == 2 && s.Find("RightArm") >= 0 && s.Find("RightHand") >= 0 &&
+                 s.Bones[s.Find("RightHand")].Parent == s.Find("RightArm"),
+            $"rig: symmetrize recreates RightArm and RightHand under it (created {created})");
+        var la = s.Bones[s.Find("LeftArm")].Head; var ra = s.Bones[s.Find("RightArm")].Head;
+        cl.Check(MathF.Abs(la.X + ra.X - 2 * box.GetCenter().X) < 1e-5f && la.Y == ra.Y && la.Z == ra.Z, "rig: mirrored joints are exact mirrors");
+        bool cycleRejected = false;
+        try { RigEdit.Reparent(s, s.Find("Tail"), s.Find("TailTip")); } catch (InvalidOperationException) { cycleRejected = true; }
+        cl.Check(cycleRejected, "rig: reparenting a bone under its own child is rejected");
+        RigEdit.Reparent(s, s.Find("TailTip"), s.Find("Body"));
+        RigEdit.Rename(s, s.Find("TailTip"), "Spike");
+        cl.Check(RigEdit.Validate(s).Count == 0, $"rig: valid after edits ({string.Join("; ", RigEdit.Validate(s))})");
+        // save + load + refit on the same bounds reproduces joints
+        var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"modelmate_rig_{Guid.NewGuid():N}.json");
+        RigPreset.Save(s, box, "roundtrip", path);
+        var s2 = RigPreset.Fit(path, box, null, log, out _);
+        float err = 0;
+        bool sameTopo = s2.Bones.Count == s.Bones.Count;
+        for (int i = 0; sameTopo && i < s.Bones.Count; i++)
+        {
+            int j = s2.Find(s.Bones[i].Name);
+            if (j < 0) { sameTopo = false; break; }
+            string p1 = s.Bones[i].Parent >= 0 ? s.Bones[s.Bones[i].Parent].Name : "", p2 = s2.Bones[j].Parent >= 0 ? s2.Bones[s2.Bones[j].Parent].Name : "";
+            sameTopo &= p1 == p2;
+            err = MathF.Max(err, MathF.Max((s.Bones[i].Head - s2.Bones[j].Head).Length(), (s.Tail(i) - s2.Tail(j)).Length()));
+        }
+        System.IO.File.Delete(path);
+        cl.Check(sameTopo && err < 1e-5f * box.Size.Length(), $"rig: save/load round trip (same hierarchy: {sameTopo}, max joint error {err:E1})");
+    }
+
     static MeshData FromPrimitive(PrimitiveMesh pm, Basis b)
     {
         var a = pm.GetMeshArrays();

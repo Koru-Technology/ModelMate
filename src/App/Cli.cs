@@ -7,7 +7,7 @@ namespace ModelMate.App;
 
 /// <summary>
 /// Headless entry: Godot --headless --path . -- --in a.glb --out b.glb [--voxel 192] [--close 1] [--tris 0]
-///   [--tex 1024] [--relax 4] [--falloff 3] [--rig humanoid|single]
+///   [--tex 1024] [--relax 4] [--falloff 3] [--rig humanoid|single|blob_biped|preset.json] [--save-rig out.json]
 /// or: -- --make-test-asset test/
 /// </summary>
 public static class Cli
@@ -21,6 +21,7 @@ public static class Cli
             {
                 var st = new CheckList();
                 ModelMate.Core.Quad.SelfTest.Run(st, s => GD.Print(s));
+                ModelMate.Core.Quad.SelfTest.Rig(st, s => GD.Print(s));
                 GD.Print("Selftest:");
                 st.Print(s => GD.Print(s));
                 return st.AllOk ? 0 : 1;
@@ -34,7 +35,7 @@ public static class Cli
             }
             if (!a.TryGetValue("in", out var input) || !a.TryGetValue("out", out var output))
             {
-                GD.PrintErr("usage: -- --in model.glb --out out.glb [--voxel N] [--close N] [--tris N] [--tex N] [--relax N] [--falloff F] [--rig humanoid|single] [--rotate-y DEG] [--retopo quad|voxel] [--quads N] [--dump-quads out.obj]");
+                GD.PrintErr("usage: -- --in model.glb --out out.glb [--voxel N] [--close N] [--tris N] [--tex N] [--relax N] [--falloff F] [--rig humanoid|single|blob_biped|preset.json] [--save-rig out.json] [--rotate-y DEG] [--retopo quad|voxel] [--quads N] [--dump-quads out.obj]");
                 return 2;
             }
             var p = new Pipeline();
@@ -64,6 +65,12 @@ public static class Cli
                 GD.Print($"Wrote quad layout to {dq}");
             }
             p.FitSkeleton();
+            if (a.TryGetValue("save-rig", out var sr))
+            {
+                var path = RigPreset.Save(p.Rig, p.Source.Mesh.Bounds(), System.IO.Path.GetFileNameWithoutExtension(sr),
+                    ProjectSettings.GlobalizePath(sr), p.RigPresetData?.Description, p.RigPresetData?.Poses);
+                GD.Print($"Saved rig to {path}");
+            }
             p.ComputeWeights();
             if (a.ContainsKey("probe-weights")) ProbeWeights(p);
             p.Unwrap();
@@ -81,7 +88,7 @@ public static class Cli
             root.Free();
             GD.Print($"Exported {output} ({p.Split.TriCount} tris, {p.Rig.Bones.Count} bones) in {total.ElapsedMilliseconds} ms");
 
-            Verify.RoundTrip(cl, output, p.S.Rig == "humanoid", p.S.NormalMap);
+            Verify.RoundTrip(cl, output, Verify.IsHumanoid(p.Rig), p.S.NormalMap);
             GD.Print("Verification:");
             cl.Print(s => GD.Print(s));
             return cl.AllOk ? 0 : 1;

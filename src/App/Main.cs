@@ -31,10 +31,14 @@ public partial class Main : Node3D
     Label _status, _voxelInfo, _triInfo;
     SpinBox _voxel, _close, _tris, _relax, _falloff, _tex;
     CheckBox _faceNegZ, _showSource, _showRetopo, _wire, _mirror, _showSkel, _heat;
-    OptionButton _retopoMode, _rigType, _boneList, _texSize;
+    OptionButton _retopoMode, _rigPreset, _parentList, _boneList, _texSize;
     HSlider _rx, _ry, _rz;
     readonly List<Button> _actionButtons = new();
     Button _btnRetopo, _btnFit, _btnCenter, _btnWeights, _btnExport, _btnTestPose, _btnResetPose;
+    Button _btnAddBone, _btnDelBone, _btnSym, _btnRename, _btnSavePreset, _btnLoadPreset;
+    LineEdit _renameEdit, _presetName;
+    CheckBox _deformCheck;
+    bool _syncingBoneUi;
     string _sourcePath;
     bool _busy, _weightsStale = true;
     readonly Dictionary<int, Vector3> _poseEuler = new();
@@ -45,8 +49,12 @@ public partial class Main : Node3D
         int ri = Array.IndexOf(args, "--render");
         if (ri >= 0 && ri + 2 < args.Length)
         {
+            int vi = Array.IndexOf(args, "--views");
             int rc = await Render.Run(this, args[ri + 1], args[ri + 2],
-                Array.IndexOf(args, "--pose") >= 0, Array.IndexOf(args, "--wire") >= 0);
+                Array.IndexOf(args, "--pose") >= 0, Array.IndexOf(args, "--wire") >= 0,
+                vi >= 0 && vi + 1 < args.Length ? args[vi + 1] : "front,side",
+                Array.IndexOf(args, "--pose-preset") is int pp and >= 0 && pp + 2 < args.Length ? args[pp + 1] : null,
+                Array.IndexOf(args, "--pose-preset") is int pq and >= 0 && pq + 2 < args.Length ? args[pq + 2] : null);
             GetTree().Quit(rc);
             return;
         }
@@ -70,8 +78,9 @@ public partial class Main : Node3D
         outDir = ProjectSettings.GlobalizePath(outDir);
         await Import(ProjectSettings.GlobalizePath(input));
         _tris.Value = 8000;
-        await OnRetopoPressed();
+        _rigPreset.Select(RigPreset.List().IndexOf("humanoid"));
         await OnFitPressed();
+        await OnRetopoPressed();
         await OnWeightsPressed();
         _boneList.Select(_p.Rig.Find("LeftUpperArm"));
         _gizmo.Select(_p.Rig.Find("LeftUpperArm"));
@@ -81,9 +90,24 @@ public partial class Main : Node3D
         _heat.ButtonPressed = false;
         Render.ApplyTestPose(_previewSkel);
         await Shot(System.IO.Path.Combine(outDir, "ui_pose.png"));
+        ResetPose();
+        // skeleton editor through the same handlers as the buttons
+        int hand = _p.Rig.Find("LeftHand");
+        _boneList.Select(hand); _gizmo.Select(hand); OnBoneSelected(hand);
+        OnAddBone();                                                   // child of LeftHand
+        _renameEdit.Text = "LeftClaw"; OnRenameBone();
+        OnSymmetrize();                                                // creates RightClaw
+        bool editsOk = _p.Rig.Find("LeftClaw") >= 0 && _p.Rig.Find("RightClaw") >= 0 &&
+                       _p.Rig.Bones[_p.Rig.Find("RightClaw")].Parent == _p.Rig.Find("RightHand");
+        _presetName.Text = "ui_smoke_rig"; OnSavePreset();
+        await FitWith("ui_smoke_rig");                                 // reload the saved preset
+        editsOk &= _p.Rig.Find("RightClaw") >= 0;
+        GD.Print($"UI smoke: skeleton edits {(editsOk ? "ok" : "FAILED")}");
+        var saved = RigPreset.Resolve("ui_smoke_rig");
+        if (saved != null) System.IO.File.Delete(saved);
         await ExportTo(System.IO.Path.Combine(outDir, "ui_export.glb"));
         while (_logQ.Count > 0) await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
-        bool ok = _status.Text.StartsWith("Done") && _lastExportOk == true;
+        bool ok = _status.Text.StartsWith("Done") && _lastExportOk == true && editsOk;
         GD.Print("UI smoke: " + _status.Text);
         GetTree().Quit(ok ? 0 : 1);
     }
@@ -133,9 +157,10 @@ public partial class Main : Node3D
         AddChild(layer);
         var panel = new PanelContainer
         {
-            AnchorLeft = 1, AnchorRight = 1, AnchorBottom = 1, OffsetLeft = -380,
+            AnchorLeft = 1, AnchorRight = 1, AnchorBottom = 1, OffsetLeft = -420,
         };
         layer.AddChild(panel);
+        panel.AddThemeStyleboxOverride("panel", new StyleBoxFlat { BgColor = new Color(0.12f, 0.13f, 0.15f) });
         var scroll = new ScrollContainer { HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled };
         panel.AddChild(scroll);
         var margin = new MarginContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
@@ -152,7 +177,43 @@ public partial class Main : Node3D
         var bImport = Btn(vb, "Import glTF…", OnImportPressed);
         _showSource = Check(vb, "Show source", true, v => { if (_sourceNode != null) _sourceNode.Visible = v; });
 
-        Header(vb, "2 · Retopology");
+        Header(vb, "2 · Skeleton");
+        _rigPreset = Option(vb, "Rig preset", RigPreset.List().ToArray());
+        _btnFit = Btn(vb, "Fit skeleton", () => _ = OnFitPressed());
+        _btnLoadPreset = Btn(vb, "Load preset file…", OnLoadPresetPressed);
+        _btnCenter = Btn(vb, "Center joints in volume", () => _ = OnCenterPressed());
+        _mirror = Check(vb, "Mirror X edits", true, v => _gizmo.Mirror = v);
+        _showSkel = Check(vb, "Show skeleton", true, v => _gizmo.Visible = v);
+        _boneList = Option(vb, "Bone", Array.Empty<string>());
+        _boneList.ItemSelected += i => { _gizmo.Select((int)i); OnBoneSelected((int)i); };
+        var eb = new HBoxContainer();
+        vb.AddChild(eb);
+        _btnAddBone = Btn(eb, "Add child", OnAddBone);
+        _btnDelBone = Btn(eb, "Delete", OnDeleteBone);
+        _btnSym = Btn(eb, "Symmetrize", OnSymmetrize);
+        _btnSym.TooltipText = "Copy every Left* bone onto its Right* partner (mirrored), creating missing partners";
+        _btnAddBone.TooltipText = "Add a bone under the selected one";
+        _btnDelBone.TooltipText = "Delete the selected bone; its children move to its parent";
+        var rn = new HBoxContainer();
+        vb.AddChild(rn);
+        _renameEdit = new LineEdit { PlaceholderText = "bone name", SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+        rn.AddChild(_renameEdit);
+        _btnRename = Btn(rn, "Rename", OnRenameBone);
+        _btnRename.CustomMinimumSize = new Vector2(90, 0);
+        _btnRename.SizeFlagsHorizontal = Control.SizeFlags.ShrinkEnd;
+        _parentList = Option(vb, "Parent", Array.Empty<string>());
+        _parentList.ItemSelected += i => OnReparent((int)i);
+        _deformCheck = Check(vb, "Deforms mesh (gets weights)", true, OnDeformToggled);
+        var sp = new HBoxContainer();
+        vb.AddChild(sp);
+        _presetName = new LineEdit { PlaceholderText = "preset name", SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+        sp.AddChild(_presetName);
+        _btnSavePreset = Btn(sp, "Save", OnSavePreset);
+        _btnSavePreset.TooltipText = "Save this skeleton as a reusable preset (joint positions relative to the model's bounds)";
+        _btnSavePreset.CustomMinimumSize = new Vector2(90, 0);
+        _btnSavePreset.SizeFlagsHorizontal = Control.SizeFlags.ShrinkEnd;
+
+        Header(vb, "3 · Retopology");
         _retopoMode = Option(vb, "Mode", new[] { "Quad (recommended)", "Voxel + decimate" });
         _retopoMode.ItemSelected += _ => UpdateVoxelInfo();
         _tris = Spin(vb, "Target triangles", 200, 200000, 8000, 100, _ => UpdateVoxelInfo());
@@ -166,15 +227,6 @@ public partial class Main : Node3D
         vb.AddChild(_triInfo);
         _showRetopo = Check(vb, "Show retopo mesh", true, _ => RefreshVisibility());
         _wire = Check(vb, "Wireframe", false, v => GetViewport().DebugDraw = v ? Viewport.DebugDrawEnum.Wireframe : Viewport.DebugDrawEnum.Disabled);
-
-        Header(vb, "3 · Skeleton");
-        _rigType = Option(vb, "Rig", new[] { "Humanoid", "Single bone (prop)" });
-        _btnFit = Btn(vb, "Fit skeleton", () => _ = OnFitPressed());
-        _btnCenter = Btn(vb, "Center joints in volume", () => _ = OnCenterPressed());
-        _mirror = Check(vb, "Mirror X edits", true, v => _gizmo.Mirror = v);
-        _showSkel = Check(vb, "Show skeleton", true, v => _gizmo.Visible = v);
-        _boneList = Option(vb, "Bone", Array.Empty<string>());
-        _boneList.ItemSelected += i => { _gizmo.Select((int)i); OnBoneSelected((int)i); };
 
         Header(vb, "4 · Weights");
         _falloff = Spin(vb, "Falloff exponent", 1, 8, 3, 0.5);
@@ -301,13 +353,20 @@ public partial class Main : Node3D
         bool src = _p.Source != null, retopo = _p.Welded != null, rig = _p.Rig != null, w = _p.WeldedBones != null && !_weightsStale;
         foreach (var b in _actionButtons) b.Disabled = _busy;
         if (_busy) return;
+        bool sel = rig && _gizmo.Selected >= 0 && _gizmo.Selected < _p.Rig.Bones.Count;
+        _btnFit.Disabled = !src;
+        _btnLoadPreset.Disabled = !src;
+        _btnCenter.Disabled = !rig;
+        _btnAddBone.Disabled = !sel;
+        _btnDelBone.Disabled = !sel || _gizmo.Selected == 0;
+        _btnRename.Disabled = !sel;
+        _btnSym.Disabled = !rig;
+        _btnSavePreset.Disabled = !rig;
         _btnRetopo.Disabled = !src;
-        _btnFit.Disabled = !retopo;
-        _btnCenter.Disabled = !rig || _rigType.Selected != 0;
-        _btnWeights.Disabled = !rig;
+        _btnWeights.Disabled = !rig || !retopo;
         _btnTestPose.Disabled = !w;
         _btnResetPose.Disabled = !w;
-        _btnExport.Disabled = !rig;
+        _btnExport.Disabled = !rig || !retopo;
     }
 
     async Task RunBusy(string what, Func<Task> work)
@@ -413,7 +472,13 @@ public partial class Main : Node3D
 
     async Task OnFitPressed()
     {
-        _p.S.Rig = _rigType.Selected == 0 ? "humanoid" : "single";
+        _p.S.Rig = _rigPreset.GetItemText(_rigPreset.Selected);
+        await FitWith(_p.S.Rig);
+    }
+
+    async Task FitWith(string presetOrPath)
+    {
+        _p.S.Rig = presetOrPath;
         await RunBusy("fit skeleton", async () =>
         {
             await Task.Run(() => _p.FitSkeleton());
@@ -425,20 +490,134 @@ public partial class Main : Node3D
     {
         await RunBusy("center joints", async () =>
         {
-            float h = _p.Welded.Bounds().Size.Y;
+            float h = _p.Source.Mesh.Bounds().Size.Y;
             await Task.Run(() => HumanoidTemplate.CenterInVolume(_p.Rig, _p.SourceBvh, h, s => Log(s)));
             _gizmo.Refresh();
             InvalidateWeights();
         });
     }
 
-    void OnRigChanged()
+    void OnRigChanged(int select = -1)
     {
-        _gizmo.SetRig(_p.Rig, _p.Welded.Bounds().Size.Y);
+        _gizmo.SetRig(_p.Rig, _p.Source.Mesh.Bounds().Size.Y);
         _boneList.Clear();
         foreach (var b in _p.Rig.Bones) _boneList.AddItem(b.Name);
+        if (select >= 0 && select < _p.Rig.Bones.Count) { _boneList.Select(select); _gizmo.Select(select); }
+        SyncBoneEditor();
         InvalidateWeights();
         UpdateButtons();
+    }
+
+    // ------------------------------------------------------------------ skeleton editing
+
+    /// <summary>Runs a structural rig edit; errors go to the log instead of throwing.</summary>
+    void Edit(string what, Func<int> edit)
+    {
+        if (_p.Rig == null) return;
+        try
+        {
+            int select = edit();
+            Log($"Rig: {what}");
+            OnRigChanged(select);
+        }
+        catch (InvalidOperationException e) { Log("Rig edit refused: " + e.Message); }
+    }
+
+    float MinBoneLength => _p.Source.Mesh.Bounds().Size.Y * 0.04f;
+
+    void OnAddBone() => Edit("added bone", () => RigEdit.AddChild(_p.Rig, _gizmo.Selected, "Bone", MinBoneLength));
+
+    void OnDeleteBone()
+    {
+        int b = _gizmo.Selected;
+        string name = _p.Rig.Bones[b].Name;
+        Edit($"deleted {name}", () => { int parent = _p.Rig.Bones[b].Parent; RigEdit.Remove(_p.Rig, b); return Math.Min(parent, _p.Rig.Bones.Count - 1); });
+    }
+
+    void OnSymmetrize() => Edit("mirrored Left* bones to Right*", () =>
+    {
+        int n = RigEdit.Symmetrize(_p.Rig, _p.Rig.Bones[0].Head.X);
+        if (n > 0) Log($"Rig: created {n} mirrored bone(s)");
+        return _gizmo.Selected;
+    });
+
+    void OnRenameBone()
+    {
+        int b = _gizmo.Selected;
+        var name = _renameEdit.Text;
+        Edit($"renamed {_p.Rig.Bones[b].Name} to {name}", () => { RigEdit.Rename(_p.Rig, b, name); return b; });
+    }
+
+    void OnReparent(int item)
+    {
+        if (_syncingBoneUi || _p.Rig == null) return;
+        int b = _gizmo.Selected;
+        int newParent = _p.Rig.Find(_parentList.GetItemText(item));
+        if (b <= 0 || newParent < 0 || newParent == _p.Rig.Bones[b].Parent) return;
+        string name = _p.Rig.Bones[b].Name;
+        Edit($"{name} now under {_p.Rig.Bones[newParent].Name}", () => { RigEdit.Reparent(_p.Rig, b, newParent); return _p.Rig.Find(name); });
+    }
+
+    void OnDeformToggled(bool on)
+    {
+        if (_syncingBoneUi || _p.Rig == null || _gizmo.Selected < 0) return;
+        _p.Rig.Bones[_gizmo.Selected].Deform = on;
+        Log($"Rig: {_p.Rig.Bones[_gizmo.Selected].Name} {(on ? "deforms" : "no longer deforms")}");
+        InvalidateWeights();
+    }
+
+    /// <summary>Shows the selected bone's name, parent and deform flag in the editor controls.</summary>
+    void SyncBoneEditor()
+    {
+        _syncingBoneUi = true;
+        _parentList.Clear();
+        int b = _gizmo.Selected;
+        if (_p.Rig != null && b >= 0 && b < _p.Rig.Bones.Count)
+        {
+            var bone = _p.Rig.Bones[b];
+            _renameEdit.Text = bone.Name;
+            _deformCheck.ButtonPressed = bone.Deform;
+            if (b == 0) _parentList.AddItem("(root)");
+            else
+                for (int i = 0; i < _p.Rig.Bones.Count; i++)
+                {
+                    if (RigEdit.IsDescendant(_p.Rig, i, b)) continue;   // can't parent under itself or its children
+                    _parentList.AddItem(_p.Rig.Bones[i].Name);
+                    if (i == bone.Parent) _parentList.Select(_parentList.ItemCount - 1);
+                }
+        }
+        _syncingBoneUi = false;
+        UpdateButtons();
+    }
+
+    void OnSavePreset()
+    {
+        var name = _presetName.Text.Trim();
+        if (name.Length == 0 || name.IndexOfAny(System.IO.Path.GetInvalidFileNameChars()) >= 0) { Log("Give the preset a file-safe name first."); return; }
+        var path = RigPreset.Save(_p.Rig, _p.Source.Mesh.Bounds(), name, null, _p.RigPresetData?.Description, _p.RigPresetData?.Poses);
+        Log($"Saved rig preset to {path}");
+        RefreshPresetList(name);
+    }
+
+    void RefreshPresetList(string select = null)
+    {
+        _rigPreset.Clear();
+        var names = RigPreset.List();
+        foreach (var n in names) _rigPreset.AddItem(n);
+        if (select != null && names.IndexOf(select) is int i and >= 0) _rigPreset.Select(i);
+    }
+
+    void OnLoadPresetPressed()
+    {
+        var fd = new FileDialog
+        {
+            FileMode = FileDialog.FileModeEnum.OpenFile, Access = FileDialog.AccessEnum.Filesystem,
+            Filters = new[] { "*.json ; Rig preset" }, UseNativeDialog = true, Title = "Load rig preset",
+        };
+        AddChild(fd);
+        fd.FileSelected += path => { _ = FitWith(path); fd.QueueFree(); };
+        fd.Canceled += () => fd.QueueFree();
+        fd.PopupCentered(new Vector2I(900, 600));
     }
 
     void InvalidateWeights()
@@ -508,7 +687,7 @@ public partial class Main : Node3D
             var root = _p.BuildScene(System.IO.Path.GetFileNameWithoutExtension(outPath));
             Exporter.ExportGlb(root, outPath);
             root.Free();
-            Verify.RoundTrip(cl, outPath, _p.S.Rig == "humanoid", _p.S.NormalMap);
+            Verify.RoundTrip(cl, outPath, Verify.IsHumanoid(_p.Rig), _p.S.NormalMap);
             Log($"Exported {outPath}");
             cl.Print(Log);
             Log(cl.AllOk ? "All checks passed." : "Some checks FAILED — see above.");
@@ -623,6 +802,7 @@ public partial class Main : Node3D
 
     void OnBoneSelected(int bone)
     {
+        SyncBoneEditor();
         _syncingSliders = true;
         var e = _poseEuler.TryGetValue(bone, out var v) ? v : Vector3.Zero;
         _rx.Value = e.X; _ry.Value = e.Y; _rz.Value = e.Z;
