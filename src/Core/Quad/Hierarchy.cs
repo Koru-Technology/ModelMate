@@ -22,6 +22,8 @@ public sealed class Level
     public Vector3[] Q, O, CQ;
     public float[] CQw;
     public float[] S;               // target edge length per vertex (uniform unless a sizing field is given)
+    public Vector3[] CO;            // position constraint: a lattice point should lie here (when COw > 0)
+    public float[] COw;
 
     public int Count => V.Length;
 }
@@ -257,6 +259,27 @@ public sealed class Hierarchy
     /// Deviation: the reference binarizes coarse weights to 1; we average them so soft guidance
     /// (weights in [0,1]) keeps its strength at every level.
     /// </summary>
+    /// <summary>
+    /// Restricts position constraints (CO/COw) from fine to coarse levels (propagateConstraints, position part).
+    /// Point constraints only: a coarse vertex takes the constraint of a constrained child.
+    /// </summary>
+    public void PropagatePositionConstraints()
+    {
+        foreach (var l in Levels) { l.CO ??= new Vector3[l.Count]; l.COw ??= new float[l.Count]; }
+        for (int li = 0; li < Levels.Count - 1; li++)
+        {
+            var f = Levels[li]; var c = Levels[li + 1];
+            for (int i = 0; i < c.Count; i++)
+            {
+                int u0 = c.Up0[i], u1 = c.Up1[i];
+                int src = f.COw[u0] > 0 ? u0 : (u1 >= 0 && f.COw[u1] > 0 ? u1 : -1);
+                if (src < 0) { c.COw[i] = 0; continue; }
+                c.CO[i] = f.CO[src];
+                c.COw[i] = f.COw[src];
+            }
+        }
+    }
+
     public void PropagateConstraints()
     {
         for (int li = 0; li < Levels.Count - 1; li++)

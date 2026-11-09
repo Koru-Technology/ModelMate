@@ -15,6 +15,7 @@ public sealed class QuadResult
     public float Rho;
     public int OrientationSingularities;
     public float[] Sizing;           // per base vertex target edge length (null = uniform Rho)
+    public int Tips;                 // sharp tips pinned
     public string Failure;           // null when the result passes the structural gates
 }
 
@@ -80,6 +81,8 @@ public static class QuadRetopo
 
     /// <summary>Least-squares fit of the remesh to the dense surface after reprojection (see SurfaceFit).</summary>
     public static bool FitToSurface = true;
+    /// <summary>Pin a lattice point onto each detected sharp tip (horn tips, noses) so they aren't cut short.</summary>
+    public static bool PinTips = true;
 
     public static QuadResult Run(MeshData baseMesh, Bvh source, float rho, Vector3[] guideDir, float[] guideW,
         int seed, Action<string> log, float[] sizing = null)
@@ -92,6 +95,19 @@ public static class QuadRetopo
         var h = Hierarchy.Build(baseMesh, rho, seed, sizing);
         T($"hierarchy ({h.Levels.Count} levels, {h.Fine.Count} verts)");
         h.ResetSolution(seed);
+        if (PinTips)
+        {
+            var tips = TipDetector.Find(baseMesh, sizing, rho);
+            if (tips.Count > 0)
+            {
+                var f0 = h.Fine;
+                f0.CO = new Vector3[f0.Count]; f0.COw = new float[f0.Count];
+                foreach (var t in tips) { f0.CO[t] = baseMesh.Pos[t]; f0.COw[t] = 1f; }
+                h.PropagatePositionConstraints();
+            }
+            r.Tips = tips.Count;
+            log?.Invoke($"  Tips pinned: {tips.Count}");
+        }
         if (guideDir != null && guideW != null)
         {
             var f = h.Fine;

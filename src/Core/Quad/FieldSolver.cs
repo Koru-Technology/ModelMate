@@ -120,6 +120,12 @@ public static class FieldSolver
                     if (wsum > 1e-30f) sum /= wsum;
                     sum -= ni * ni.Dot(sum - vi);
                 }
+                // point constraint (port of the CO/COw term): pull the lattice origin onto the constraint point
+                if (l.COw != null && l.COw[i] > 0)
+                {
+                    sum += l.COw[i] * (l.CO[i] - sum);
+                    sum -= ni * ni.Dot(sum - vi);
+                }
                 if (wsum > 0) l.O[i] = FieldMath.PositionRound4(sum, qi, ni, vi, l.S[i], 1f / l.S[i]);
             });
         }

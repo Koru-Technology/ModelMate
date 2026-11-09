@@ -55,7 +55,7 @@ Camera: right-drag to orbit, Shift + right-drag to pan, mouse wheel or trackpad 
 ```sh
 $G --headless --path . -- --in model.glb --out model_rigged.glb \
    [--retopo quad|voxel] [--tris 8000] [--sizing auto|uniform|adaptive] [--detail 256] [--flow 0] \
-   [--dump-quads layout.obj] [--seed 1] \
+   [--no-fit] [--no-pin] [--dump-quads layout.obj] [--seed 1] \
    [--voxel 256] [--close 1] [--tex 1024] [--relax 4] [--falloff 3] \
    [--rig humanoid|single|blob_biped|preset.json] [--save-rig out.json] \
    [--rotate-y 180] [--no-normal] [--no-joint-aware] [--probe-weights]
@@ -107,23 +107,24 @@ Average p99 error over the bone poses, % of model height, defaults for both mode
 
 | model | | 1k | 2k | 4k | 8k |
 |---|---|---|---|---|---|
-| A-pose humanoid | total posed (quad / voxel) | **0.63** / 0.68 | 0.35 / **0.32** | 0.24 / 0.24 | **0.16** / 0.21 |
-| | bending | **0.25** / 0.36 | **0.16** / 0.24 | **0.11** / 0.23 | **0.07** / 0.21 |
-| lumpy humanoid | total posed | **0.62** / 0.65 | 0.39 / **0.29** | 0.25 / **0.22** | 0.17 / **0.16** |
-| | bending | **0.26** / 0.32 | **0.17** / 0.24 | **0.11** / 0.20 | **0.09** / 0.15 |
-| Lil gug | total posed | 1.36 / **1.02** | 0.74 / 0.74 | **0.49** / 0.54 | 0.38 / 0.38 |
-| | bending | **0.80** / 0.92 | **0.62** / 0.69 | **0.44** / 0.52 | **0.36** / 0.36 |
+| A-pose humanoid | total posed (quad / voxel) | **0.62** / 0.68 | 0.33 / **0.32** | **0.23** / 0.24 | **0.16** / 0.21 |
+| | bending | **0.26** / 0.36 | **0.16** / 0.24 | **0.11** / 0.23 | **0.07** / 0.21 |
+| lumpy humanoid | total posed | 0.65 / 0.65 | 0.41 / **0.29** | 0.25 / **0.22** | 0.16 / 0.16 |
+| | bending | **0.25** / 0.32 | **0.18** / 0.24 | **0.12** / 0.20 | **0.08** / 0.15 |
+| Lil gug | total posed | 1.29 / **1.02** | 0.74 / 0.74 | **0.50** / 0.54 | **0.36** / 0.38 |
+| | bending | **0.88** / 0.92 | **0.62** / 0.69 | **0.45** / 0.52 | **0.34** / 0.36 |
 
 *Bending* is how much worse the mesh gets when posed; *total posed* is what a viewer sees in the pose (shape error plus bending).
 
 - **Quad mode bends more cleanly at every budget.** Voxel mode's bending error stays high even at 8k because decimation leaves long slivers that span joints.
-- **Overall they're close**: quad wins or ties in 7 of 12 cells. Voxel mode still matches shape better in a few (Lil gug at 1k, fine ridges at 2k–4k), because its long slivers follow ridges that roughly square quads can't.
+- **Overall they're close**: quad wins or ties in 8 of 12 cells. Voxel mode still matches shape better in a few (Lil gug at 1k, fine ridges at 2k–4k), because its long slivers follow ridges that roughly square quads can't.
 - Quad stays the default because it's the mode that animates cleanly; voxel mode is there when a static silhouette matters more.
 
 How quad mode got here, measured with the same report:
 1. **Uniform spacing** was worse at matching shape at mobile budgets (e.g. 1.19 vs voxel 0.75 total on Lil gug at 2k), because triangles were spread by area, not by need.
 2. **Adaptive spacing** (`--sizing auto`, below) spends more quads where the surface curves.
-3. **Surface fitting** (`SurfaceFit`, on by default in both modes, `--no-fit` to disable) moves vertices slightly off the surface along their normals so the faces fit the dense surface in a least-squares sense. A coarse mesh with every vertex *on* a curved surface has every face cutting inside it; balancing that roughly halves shape error. It took Lil gug at 2k from 0.86 to 0.74 in quad mode and the A-pose humanoid at 1k from 1.01 to 0.68 in voxel mode.
+3. **Tip pinning** (`TipDetector`, on by default in quad mode, `--no-pin` to disable): sharp convex tips (horn tips, noses, box corners) get a lattice point pinned onto them through the position constraints of the field solver, so they aren't cut short. It removed the "feature shortened" warning on Lil gug's horns at 2k and improved most cells slightly (Lil gug at 1k: 1.36 → 1.29 total), at a cost of about 5% on the noisy lumpy humanoid at 1k–2k.
+4. **Surface fitting** (`SurfaceFit`, on by default in both modes, `--no-fit` to disable) moves vertices slightly off the surface along their normals so the faces fit the dense surface in a least-squares sense. A coarse mesh with every vertex *on* a curved surface has every face cutting inside it; balancing that roughly halves shape error. It took Lil gug at 2k from 0.86 to 0.74 in quad mode and the A-pose humanoid at 1k from 1.01 to 0.68 in voxel mode.
 
 (The report builds both modes from the same 256-cell base mesh, which is also the shipping default for both.)
 
