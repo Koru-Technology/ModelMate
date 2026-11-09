@@ -6,3 +6,4 @@ obj/
 test/*.glb
 test/*.png
 test/*.obj
+test/report/

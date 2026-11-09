@@ -247,14 +247,25 @@ public sealed class Pipeline
     /// </summary>
     public void ComputeWeights()
     {
+        var surf = BaseMesh ?? Welded;
+        WeightSurface = surf;
+        Bvh surfBvh;
+        (SurfBones, SurfWeights, WeightsSymmetric, surfBvh) = SolveWeights(surf);
+        if (surf == Welded) (WeldedBones, WeldedWeights) = (SurfBones, SurfWeights);
+        else
+            (WeldedBones, WeldedWeights) = Timed("transfer weights", () =>
+                Symmetry.TransferWeights(surf, surfBvh, SurfBones, SurfWeights, Welded));
+    }
+
+    /// <summary>Geodesic weights on a dense surface: smooth (world radius), mirror if symmetric, top-4.</summary>
+    public (int[] bones, float[] weights, bool symmetric, Bvh surfBvh) SolveWeights(MeshData surf)
+    {
         var sm = Source.Mesh;
         if (WeightGrid == null || _weightGridClose != S.Close)
         {
             WeightGrid = Timed("weight voxels", () => VoxelGrid.Build(sm.Pos, sm.Tris, SourceBvh, S.WeightRes, S.Close, L));
             _weightGridClose = S.Close;
         }
-        var surf = BaseMesh ?? Welded;
-        WeightSurface = surf;
         int nb = Rig.Bones.Count;
         var dense = Timed("geodesic weights", () => VoxelGeodesicWeights.Compute(surf, Rig, WeightGrid, SourceBvh, S.Falloff, L));
 
@@ -264,38 +275,30 @@ public sealed class Pipeline
         {
             edgeSum += (surf.Pos[surf.Tris[3 * t]] - surf.Pos[surf.Tris[3 * t + 1]]).Length(); edgeN++;
         }
-        float edge = (float)(edgeSum / Math.Max(1, edgeN));
+        float edge = MathF.Max((float)(edgeSum / Math.Max(1, edgeN)), 1e-9f);
         float radius = S.SmoothRadius * sm.Bounds().Size.Y;
-        int passes = Math.Clamp((int)MathF.Ceiling(radius / MathF.Max(edge, 1e-9f) * radius / MathF.Max(edge, 1e-9f)), 1, 200);
+        int passes = Math.Clamp((int)MathF.Ceiling(radius / edge * (radius / edge)), 1, 200);
         dense = Timed($"smooth weights ({passes} passes)", () => WeightSmoother.Smooth(surf, dense, nb, passes));
 
-        WeightsSymmetric = false;
-        Bvh surfBvh = null;
+        bool symmetric = false;
+        var surfBvh = new Bvh(surf.Pos, surf.Tris);
         if (S.SymmetricWeights)
         {
             var box = surf.Bounds();
             float cx = box.GetCenter().X;
             float voxel = Grid?.H ?? box.Size.Length() / 256f;
-            surfBvh = new Bvh(surf.Pos, surf.Tris);
             var (meshSym, mean, p99, max) = Symmetry.DetectMesh(surf, surfBvh, cx, voxel);
             bool rigSym = Symmetry.RigSymmetric(Rig, cx, 0.01f * box.Size.Y, out var why);
             if (meshSym && rigSym)
             {
                 dense = Timed("symmetric weights", () => Symmetry.SymmetrizeDense(surf, surfBvh, dense, nb, Symmetry.BoneMirror(Rig), cx));
-                WeightsSymmetric = true;
+                symmetric = true;
                 L("Weights: mirror-averaged (model and rig are symmetric)");
             }
             else L($"Weights: not mirrored ({(meshSym ? "rig: " + why : $"model isn't mirror-symmetric (mean {mean / voxel:F2}, p99 {p99 / voxel:F2}, max {max / voxel:F1} voxels)")})");
         }
-        (SurfBones, SurfWeights) = WeightSmoother.Prune(dense, surf.VertexCount, nb);
-
-        if (surf == Welded) (WeldedBones, WeldedWeights) = (SurfBones, SurfWeights);
-        else
-        {
-            surfBvh ??= new Bvh(surf.Pos, surf.Tris);
-            (WeldedBones, WeldedWeights) = Timed("transfer weights", () =>
-                Symmetry.TransferWeights(surf, surfBvh, SurfBones, SurfWeights, Welded));
-        }
+        var (bones, weights) = WeightSmoother.Prune(dense, surf.VertexCount, nb);
+        return (bones, weights, symmetric, surfBvh);
     }
 
     /// <summary>[main] UV unwrap + transfer of welded attributes onto split vertices.</summary>

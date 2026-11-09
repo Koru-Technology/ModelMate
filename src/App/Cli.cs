@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
 using ModelMate.Core;
 
@@ -33,9 +34,10 @@ public static class Cli
                 GD.Print($"Wrote test assets to {dir}");
                 return 0;
             }
-            if (!a.TryGetValue("in", out var input) || !a.TryGetValue("out", out var output))
+            a.TryGetValue("out", out var output);
+            if (!a.TryGetValue("in", out var input) || (output == null && !a.ContainsKey("deform-report")))
             {
-                GD.PrintErr("usage: -- --in model.glb --out out.glb [--voxel N] [--close N] [--tris N] [--tex N] [--relax N] [--falloff F] [--rig humanoid|single|blob_biped|preset.json] [--save-rig out.json] [--rotate-y DEG] [--retopo quad|voxel] [--quads N] [--dump-quads out.obj]");
+                GD.PrintErr("usage: -- --in model.glb (--out out.glb | --deform-report dir [--budgets 1000,2000] [--modes quad,voxel]) [--voxel N] [--close N] [--tris N] [--tex N] [--relax N] [--falloff F] [--rig humanoid|single|blob_biped|preset.json] [--save-rig out.json] [--rotate-y DEG] [--retopo quad|voxel] [--quads N] [--dump-quads out.obj]");
                 return 2;
             }
             var p = new Pipeline();
@@ -55,21 +57,22 @@ public static class Cli
             if (a.ContainsKey("no-joint-aware")) p.S.JointAware = false;
 
             input = ProjectSettings.GlobalizePath(input);
-            output = ProjectSettings.GlobalizePath(output);
+            if (output != null) output = ProjectSettings.GlobalizePath(output);
             var total = System.Diagnostics.Stopwatch.StartNew();
             p.Import(input);
+            FitAndMaybeSave(p, a);
+            if (a.TryGetValue("deform-report", out var rd))
+            {
+                var budgets = (a.TryGetValue("budgets", out var bs) ? bs : "1000,2000,4000,8000,16000")
+                    .Split(',').Select(x => int.Parse(x.Trim())).ToArray();
+                var modes = (a.TryGetValue("modes", out var ms) ? ms : "quad,voxel").Split(',').Select(x => x.Trim()).ToArray();
+                return DeformReport.Run(p, ProjectSettings.GlobalizePath(rd), budgets, modes, s => GD.Print(s));
+            }
             p.Retopo();
             if (a.TryGetValue("dump-quads", out var dq) && p.Welded?.TriFlags != null)
             {
                 ModelMate.Core.Quad.PolyMesh.FromTriangles(p.Welded).WriteObj(ProjectSettings.GlobalizePath(dq));
                 GD.Print($"Wrote quad layout to {dq}");
-            }
-            p.FitSkeleton();
-            if (a.TryGetValue("save-rig", out var sr))
-            {
-                var path = RigPreset.Save(p.Rig, p.Source.Mesh.Bounds(), System.IO.Path.GetFileNameWithoutExtension(sr),
-                    ProjectSettings.GlobalizePath(sr), p.RigPresetData?.Description, p.RigPresetData?.Poses);
-                GD.Print($"Saved rig to {path}");
             }
             p.ComputeWeights();
             if (a.ContainsKey("probe-weights")) ProbeWeights(p);
@@ -97,6 +100,17 @@ public static class Cli
         {
             GD.PrintErr("ERROR: " + e);
             return 1;
+        }
+    }
+
+    static void FitAndMaybeSave(Pipeline p, Dictionary<string, string> a)
+    {
+        p.FitSkeleton();
+        if (a.TryGetValue("save-rig", out var sr))
+        {
+            var path = RigPreset.Save(p.Rig, p.Source.Mesh.Bounds(), System.IO.Path.GetFileNameWithoutExtension(sr),
+                ProjectSettings.GlobalizePath(sr), p.RigPresetData?.Description, p.RigPresetData?.Poses);
+            GD.Print($"Saved rig to {path}");
         }
     }
 

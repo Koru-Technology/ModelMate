@@ -95,6 +95,20 @@ JSON presets (`rigs/*.json` built in, user presets in Godot's `user://rigs`) sto
 | UVs and bake | `UvUnwrap` (xatlas via `ArrayMesh.LightmapUnwrap`) and `TextureBaker`. Colour: a ray along the normal onto opaque, outward-facing source triangles, so transparent overlay shells and the backs of overlapping internal shells are ignored. Normals: from the clean base mesh, which avoids artifacts where source shells overlap. Detail finer than one base-mesh voxel isn't captured. Normal maps are tangent-space and OpenGL-style, using MikkTSpace tangents that are exported with the mesh. |
 | Export | `RigBuilder` and `Exporter` (`GltfDocument`), then `Verify.RoundTrip`. |
 
+## Deformation report: quad vs voxel
+
+`./test/deform_report.sh [outdir]` (or `--deform-report <dir>` on the CLI) poses every variant (mode × budget) with the *same* weights, transferred from a dense reference, so the numbers measure tessellation and edge layout only. It writes `report.md`, `report.csv` and posed OBJs per model, and renders the named poses at mobile budgets.
+
+What it shows on the test models (Lil gug, the A-pose humanoid and the lumpy humanoid, 1k–16k triangles):
+
+| | quad mode | voxel + decimate |
+|---|---|---|
+| Bending error (how much worse the mesh gets when posed) | Lower at almost every budget on all three models, often by 1.5–4×. | Stays high even at 16k: decimation leaves long slivers that span joints. |
+| Shape before posing | Worse at 2k–8k: uniform density can't spend triangles where the surface curves. | Better: decimation is curvature-adaptive. |
+| Sides around a limb at 1k triangles | 4 | about 13 |
+
+So quad mode's edge layout bends better, and its weakness at low budgets is *where* it spends triangles, not which way the edges run.
+
 ## Checks run on export
 The mesh is manifold. UVs are in [0,1]. Weights sum to 1 with at most 4 bones per vertex. Seam vertices carry identical attributes. In voxel mode the triangle budget is met.
 
@@ -119,7 +133,7 @@ Humanoid rigs additionally:
 - rotating `LeftUpperArm` moves the left arm but not the right arm or the feet.
 
 ## Limitations
-- Quad mode spaces edges uniformly. Its edge loops follow surface curvature, not the skeleton, and there are no extra loops at joints yet.
+- Quad mode spaces edges uniformly, so at mobile budgets thin limbs get few sides (4 around an arm at 1k triangles) while flat areas get more than they need. Its edge loops follow surface curvature, not the skeleton.
 - Features thinner than about one quad, or about two voxels in voxel mode (fingers, ears, horn tips), can merge or disappear.
 - Parts that are just single-sided surfaces with nothing inside (capes, hair cards) end up as thin closed shells.
 - Weights are automatic only; there's no weight painting. The humanoid template has no finger, eye or jaw bones.
