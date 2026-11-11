@@ -1,0 +1,19 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 2012
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ModelMate", "ModelMate.csproj", "{750C9581-EB36-44B4-8707-B3AEC35D8C71}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+	Debug|Any CPU = Debug|Any CPU
+	ExportDebug|Any CPU = ExportDebug|Any CPU
+	ExportRelease|Any CPU = ExportRelease|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{750C9581-EB36-44B4-8707-B3AEC35D8C71}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{750C9581-EB36-44B4-8707-B3AEC35D8C71}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{750C9581-EB36-44B4-8707-B3AEC35D8C71}.ExportDebug|Any CPU.ActiveCfg = ExportDebug|Any CPU
+		{750C9581-EB36-44B4-8707-B3AEC35D8C71}.ExportDebug|Any CPU.Build.0 = ExportDebug|Any CPU
+		{750C9581-EB36-44B4-8707-B3AEC35D8C71}.ExportRelease|Any CPU.ActiveCfg = ExportRelease|Any CPU
+		{750C9581-EB36-44B4-8707-B3AEC35D8C71}.ExportRelease|Any CPU.Build.0 = ExportRelease|Any CPU
+	EndGlobalSection
+EndGlobal

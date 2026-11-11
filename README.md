@@ -8,7 +8,7 @@
 **Libraries used (through Godot, not vendored here)**
 - **[Godot Engine](https://godotengine.org) 4.7** (MIT): the runtime, UI, rendering, glTF import and export (`GLTFDocument`), `Skeleton3D`/`Skin`, and `SkeletonProfileHumanoid` (the bone names and hierarchy of the humanoid rig).
 - **[.NET 8](https://dotnet.microsoft.com) and the Godot .NET SDK** (MIT): the C# toolchain.
-- **[xatlas](https://github.com/jpcy/xatlas)** (MIT): UV unwrapping, called through Godot's `ArrayMesh.LightmapUnwrap`.
+- **[xatlas](https://github.com/jpcy/xatlas)** (MIT): UV unwrapping, called through Godot's `ArrayMesh.LightmapUnwrap`. Godot compiles it into the editor only, so exported apps (the iPad build) use the built-in chart unwrapper instead (`ChartUnwrap.cs`).
 - **[MikkTSpace](https://github.com/mmikk/MikkTSpace)** (zlib-style license) by Morten Mikkelsen: tangent generation for normal maps, called through Godot's `SurfaceTool.GenerateTangents`.
 
 **Algorithms implemented from publications (no code copied)**
@@ -16,6 +16,7 @@
 - **Quadric error metrics**: M. Garland and P. Heckbert, *Surface Simplification Using Quadric Error Metrics*, SIGGRAPH 1997. Used for decimation (`QemDecimator.cs`).
 - **Geodesic voxel skinning**: the idea of measuring bone distance through the voxelized interior comes from O. Dionne and M. de Lasa, *Geodesic Voxel Binding for Production Character Meshes*, SCA 2013. `VoxelGeodesicWeights.cs` is a simplified variant (Dijkstra over interior voxels with an inverse-distance falloff), not their full method.
 - **Closest point on a triangle**: C. Ericson, *Real-Time Collision Detection*, 2004 (`Geo.ClosestPtTri`).
+- **Rotating calipers** (minimum-area bounding rectangle): G. Toussaint, *Solving Geometric Problems with the Rotating Calipers*, 1983. **Skyline bin packing**: J. Jylänki, *A Thousand Ways to Pack the Bin*, 2010. Both are used by the chart unwrapper (`ChartUnwrap.cs`).
 - **Ray–triangle intersection**: T. Möller and B. Trumbore, *Fast, Minimum Storage Ray/Triangle Intersection*, 1997 (`Geo.RayTri`).
 
 **Tools used only during development (not part of the app)**
@@ -48,7 +49,7 @@ $G --path .                      # UI
 5. Preview poses with the rotation sliders or **Test pose**. Use **Reset pose** before editing joints again.
 6. Click **Export .glb**. This unwraps the UVs, bakes the maps, writes the file, then re-imports it and runs the checks listed below. The results appear in the log.
 
-Camera: right-drag to orbit, Shift + right-drag to pan, mouse wheel or trackpad to zoom.
+Camera: left-drag on empty space or right-drag to orbit, Shift + drag to pan, mouse wheel or trackpad (pinch or scroll) to zoom. **Frame model** re-centres the view.
 
 **Headless CLI** (the same pipeline, plus verification; exits 0 only if every check passes):
 
@@ -58,7 +59,7 @@ $G --headless --path . -- --in model.glb --out model_rigged.glb \
    [--no-fit] [--no-pin] [--dump-quads layout.obj] [--seed 1] \
    [--voxel 256] [--close 1] [--tex 1024] [--relax 4] [--falloff 3] \
    [--rig humanoid|single|blob_biped|preset.json] [--save-rig out.json] \
-   [--rotate-y 180] [--no-normal] [--no-joint-aware] [--probe-weights]
+   [--rotate-y 180] [--no-normal] [--no-joint-aware] [--probe-weights] [--unwrap auto|xatlas|charts]
 $G --headless --path . -- --in model.glb --rig humanoid --deform-report <dir> [--budgets 1000,2000] [--modes quad,quadflow,voxel]
 $G --headless --path . -- --selftest-fields                      # quad remesher + rig editing self-tests
 $G --headless --path . -- --make-test-asset res://test [--dense] # procedural test humanoids (T-pose, open, A-pose, ~3.8M-tri dense)
@@ -67,7 +68,36 @@ $G --headless --path . -- --make-test-asset res://test [--dense] # procedural te
 $G --path . -- --render out.glb shot.png [--views front,side,back,top,bottom,three] [--wire] \
    [--pose | --pose-preset rigs/blob_biped.json waddle_left]     # snapshot (windowed); also accepts a quad .obj
 $G --path . -- --ui-smoke res://test/humanoid.glb <dir>          # drives the UI end to end
+$G --path . -- --touch-ui                                        # the iPad (touch) UI on the desktop
+$G --path . -- --touch-test                                      # synthetic touch gestures: orbit, joint drag, pinch
+./test/ios_build.sh [--sim [--smoke]]                            # iOS Xcode project; iPad simulator build and smoke test
 ```
+
+## Running on an iPad
+
+ModelMate runs on an iPad as an ordinary app (tested target: iPad Pro, M1 or later). The UI scales for touch:
+
+| gesture | does |
+|---|---|
+| one finger on empty space | orbit |
+| one finger on a joint | move the joint |
+| two fingers | pinch to zoom, drag to pan |
+| **Frame model** button | re-centre the camera |
+
+**Files.** The app's folder appears in the Files app under **On My iPad › ModelMate**. Put `.glb`/`.gltf` models in `Models/`; **Import** opens that folder. **Export** writes straight to `Exports/<model>_rigged.glb`, and saved rig presets go to `rigs/`. AirDrop or copy the export from Files to use it in your game project.
+
+**Building and installing** (needs a Mac with Xcode, the Godot 4.7.2 .NET export templates, and a free or paid Apple ID):
+
+1. `./test/ios_build.sh` exports the Xcode project to `build/ios/ModelMate.xcodeproj`.
+2. On the iPad, turn on **Settings › Privacy & Security › Developer Mode**, then connect it with a cable.
+3. Open the Xcode project. Under **Signing & Capabilities**, choose your Personal Team. If Xcode says the bundle ID is taken, change `dev.warent.modelmate` to something unique.
+4. Pick the iPad as the run destination and press **Run**. On the first launch, trust the developer under **Settings › General › VPN & Device Management**.
+
+With a free Apple ID, the app stops opening after 7 days; run it from Xcode again to renew it.
+
+**Testing in the simulator.** `./test/ios_build.sh --sim` builds for the iPad simulator, installs the app and copies the test models into its `Models/` folder. `--sim --smoke` also runs the UI smoke test inside the simulator. Godot ships its simulator library for x86_64 only, and iOS 26 simulators no longer run x86_64 apps on Apple silicon, so this needs an iOS 18 (or older) simulator runtime (`SIM="<device name>"` picks it). The simulator uses the Mac's CPU and memory, so its timings say nothing about the device.
+
+**What differs from the desktop.** UV unwrapping uses the built-in chart unwrapper, because Godot's xatlas module isn't in exported apps. On Lil gug at 2k triangles its layout covers 54% of the texture with 42 charts (xatlas: 55%, 30 charts), and the rendered result differs from the xatlas export by 0.3/255 per pixel on average. The log reports the time and memory of each step. Keep the app in front while it works: iPadOS pauses apps in the background.
 
 ## Rig presets
 | Preset | For | Bones |
@@ -134,6 +164,8 @@ How quad mode got here, measured with the same report:
 
 ## Checks run on export
 The mesh is manifold. UVs are in [0,1]. Weights sum to 1 with at most 4 bones per vertex. Seam vertices carry identical attributes. In voxel mode the triangle budget is met.
+
+UV layout: no triangle is flipped against its chart. With the built-in chart unwrapper (iPad builds, or `--unwrap charts`), rasterizing the layout at the texture size also shows no texel claimed by two triangles, charts at least 2 texels apart, and 95th-percentile area stretch at most 1.6. For xatlas layouts (editor builds) those figures are reported as `[METRIC]` lines, since xatlas occasionally packs a few texels of overlap.
 
 In quad mode:
 - no fallback was used;
