@@ -375,7 +375,7 @@ public sealed class Pipeline
     /// <summary>[main] UV unwrap + transfer of welded attributes onto split vertices.</summary>
     public void Unwrap()
     {
-        (Split, SplitOrigin) = Timed("uv unwrap", () => UvUnwrap.Unwrap(Welded, S.TexSize));
+        (Split, SplitOrigin) = Timed("uv unwrap", () => UvUnwrap.Unwrap(Welded, S.TexSize, L));
         int n = Split.VertexCount;
         SplitBones = new int[n * 4];
         SplitWeights = new float[n * 4];

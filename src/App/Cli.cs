@@ -58,6 +58,7 @@ public static class Cli
             if (a.TryGetValue("sizing", out v)) p.S.Sizing = v;
             if (a.ContainsKey("no-fit")) ModelMate.Core.Quad.QuadRetopo.FitToSurface = false;
             if (a.ContainsKey("no-pin")) ModelMate.Core.Quad.QuadRetopo.PinTips = false;
+            if (a.TryGetValue("unwrap", out v)) UvUnwrap.Mode = v;
 
             if (a.TryGetValue("curv", out v)) p.S.CurvatureSizing = float.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
             if (a.TryGetValue("adapt", out v)) p.S.Adaptivity = float.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
@@ -90,6 +91,7 @@ public static class Cli
 
             var cl = new CheckList();
             Verify.PreExport(cl, p.Welded, p.Split, p.SplitOrigin, p.SplitBones, p.SplitWeights, p.AppliedTriBudget);
+            ChartUnwrap.CheckLayout(cl, $"UV layout ({UvUnwrap.LastUsed})", p.Split, p.S.TexSize, UvUnwrap.LastUsed == "charts");
             Verify.BakedTexture(cl, p.AlbedoRgba);
             Verify.QuadMesh(cl, p);
             Verify.LimbSides(cl, p);

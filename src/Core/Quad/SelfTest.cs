@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System;
 using Godot;
 
@@ -89,6 +90,29 @@ public static class SelfTest
         cl.Check(s.Irregular <= 0.05f * s.Vertices, $"1a sphere: irregular vertices {s.Irregular} <= 5% of {s.Vertices}");
         cl.Check(s.QuadFraction > 0.90f, $"1a sphere: quads {s.QuadFraction:P1} > 90%");
         cl.Check(Math.Abs(s.Quads - 1500) <= 300, $"1a sphere: quad count {s.Quads} within ±20% of 1500");
+
+        // built-in UV unwrapper (the path exported apps take): valid layout, seams only on real quad edges
+        if (r.Mesh.Nrm == null) r.Mesh.ComputeNormals();
+        var (split, origin, info) = ChartUnwrap.Unwrap(r.Mesh, 1024);
+        ChartUnwrap.CheckLayout(cl, "1c sphere charts", split, 1024, true);
+        bool originOk = origin.Length == split.VertexCount;
+        for (int i = 0; i < origin.Length && originOk; i++) originOk = split.Pos[i] == r.Mesh.Pos[origin[i]];
+        bool trisOk = true;
+        for (int i = 0; i < split.Tris.Length && trisOk; i++) trisOk = origin[split.Tris[i]] == r.Mesh.Tris[i];
+        cl.Check(originOk && trisOk, "1c sphere charts: split vertices map back to their welded vertex, triangle order kept");
+        // a diagonal is a seam if its two triangles don't share both split endpoints: each key then appears once per side
+        int seamDiag = 0;
+        var cnt = new Dictionary<long, int>();
+        for (int t = 0; t < split.TriCount; t++)
+            for (int k = 0; k < 3; k++)
+                if ((r.Mesh.TriFlags[t] & (1 << k)) != 0)
+                {
+                    int a = split.Tris[3 * t + k], b = split.Tris[3 * t + (k + 1) % 3];
+                    long key = a < b ? ((long)a << 32) | (uint)b : ((long)b << 32) | (uint)a;
+                    cnt[key] = cnt.TryGetValue(key, out int c0) ? c0 + 1 : 1;
+                }
+        foreach (var kv in cnt) if (kv.Value == 1) seamDiag++;
+        cl.Check(seamDiag == 0, $"1c sphere charts: no seam cuts a quad diagonal ({seamDiag}); {info.Charts} charts, fill {info.Fill:P0}");
     }
 
     static void Capsule(CheckList cl, Action<string> log)

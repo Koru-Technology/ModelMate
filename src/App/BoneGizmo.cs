@@ -135,6 +135,9 @@ public partial class BoneGizmo : Node3D
         Refresh();
     }
 
+    /// <summary>Joint pick radius in screen pixels (Main enlarges it for touch screens and UI scale).</summary>
+    public float PickRadius = 14;
+
     public override void _UnhandledInput(InputEvent e)
     {
         if (Rig == null || Cam == null || !Visible) return;
@@ -142,7 +145,8 @@ public partial class BoneGizmo : Node3D
         {
             if (mb.Pressed)
             {
-                int best = -1; float bd = 14;
+                if (OrbitCamera.MultiTouch) return;
+                int best = -1; float bd = PickRadius;
                 for (int h = 0; h < _handles.Count; h++)
                 {
                     var p = HandlePos(h);
@@ -176,6 +180,13 @@ public partial class BoneGizmo : Node3D
         }
         else if (e is InputEventMouseMotion mm && _drag >= 0)
         {
+            if (OrbitCamera.MultiTouch)
+            {
+                // a second finger landed: end the joint drag where it is and let the camera pinch/pan
+                _drag = -1;
+                Edited?.Invoke();
+                return;
+            }
             var p = HandlePos(_drag);
             var plane = new Plane(-Cam.GlobalBasis.Z, p);
             var hit = plane.IntersectsRay(Cam.ProjectRayOrigin(mm.Position), Cam.ProjectRayNormal(mm.Position));

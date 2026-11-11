@@ -58,18 +58,80 @@ public partial class Main : Node3D
             GetTree().Quit(rc);
             return;
         }
+        _mobile = OS.HasFeature("mobile");
+        if (_mobile && args.Length == 0) args = SmokeArgsFromFile();
         int si = Array.IndexOf(args, "--ui-smoke");
-        if (args.Length > 0 && si < 0)
+        bool touchTest = args.Contains("--touch-test");
+        _touchUi = _mobile || args.Contains("--touch-ui") || touchTest;
+        if (args.Length > 0 && si < 0 && !_touchUi)
         {
             GetTree().Quit(Cli.Run(args));
             return;
         }
         _p.Log = s => _logQ.Enqueue(s);
+        if (_touchUi) SetupTouch();
         BuildWorld();
         BuildUi();
         UpdateButtons();
         if (si >= 0 && si + 2 < args.Length) { await UiSmoke(args[si + 1], args[si + 2]); return; }
-        Log("Import a .glb/.gltf to begin. Right-drag: orbit · Shift+right-drag: pan · Wheel: zoom · Left-drag joints to edit.");
+        if (touchTest) { await TouchTest(); return; }
+        Log(_touchUi
+            ? "Put .glb files in Files › On My iPad › ModelMate › Models, then tap Import. One finger: orbit · two fingers: pinch to zoom, drag to pan · drag a joint to move it."
+            : "Import a .glb/.gltf to begin. Left/right-drag: orbit · Shift+drag: pan · Wheel: zoom · Left-drag joints to edit.");
+    }
+
+    // ------------------------------------------------------------------ touch / mobile
+
+    bool _mobile, _touchUi;
+    long _peakMem;
+    double _memSampleT;
+
+    /// <summary>
+    /// Mobile has no command line, so automated runs (simulator tests) put the arguments in user://ui_smoke.txt,
+    /// one per line. The file is consumed so the next launch starts normally.
+    /// </summary>
+    static string[] SmokeArgsFromFile()
+    {
+        const string f = "user://ui_smoke.txt";
+        if (!Godot.FileAccess.FileExists(f)) return Array.Empty<string>();
+        var lines = Godot.FileAccess.GetFileAsString(f).Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        DirAccess.RemoveAbsolute(ProjectSettings.GlobalizePath(f));
+        return lines;
+    }
+
+    /// <summary>UI scale for high-DPI touch screens, the app's Files folders, and a larger joint pick radius.</summary>
+    void SetupTouch()
+    {
+        if (_mobile)
+        {
+            float scale = MathF.Max(1, DisplayServer.ScreenGetScale());
+            GetWindow().ContentScaleFactor = scale;
+        }
+        foreach (var d in new[] { "user://Models", "user://Exports", "user://rigs" })
+            DirAccess.MakeDirRecursiveAbsolute(ProjectSettings.GlobalizePath(d));
+        Log($"Files folder: {OS.GetUserDataDir()}");
+    }
+
+    /// <summary>Touch-sized controls (44 pt) everywhere under the panel.</summary>
+    static void EnlargeForTouch(Node n)
+    {
+        if (n is Button or SpinBox or LineEdit or HSlider)
+        {
+            var c = (Control)n;
+            c.CustomMinimumSize = new Vector2(c.CustomMinimumSize.X, MathF.Max(c.CustomMinimumSize.Y, 44));
+        }
+        foreach (var ch in n.GetChildren()) EnlargeForTouch(ch);
+    }
+
+    void SampleMemory()
+    {
+        try { _peakMem = Math.Max(_peakMem, System.Environment.WorkingSet); } catch { /* not supported */ }
+    }
+
+    string MemoryText()
+    {
+        try { return $"memory {System.Environment.WorkingSet / 1048576} MB, peak {_peakMem / 1048576} MB"; }
+        catch { return "memory n/a"; }
     }
 
     /// <summary>Drives the UI steps programmatically (same code paths as the buttons), then screenshots.</summary>
@@ -112,6 +174,79 @@ public partial class Main : Node3D
         GetTree().Quit(ok ? 0 : 1);
     }
 
+    /// <summary>
+    /// Feeds synthetic touch events through Input.ParseInputEvent (the same path a touch screen uses, including
+    /// Godot's touch-to-mouse emulation) and checks orbit, joint drag and pinch. Exit code 0 when all pass.
+    /// </summary>
+    async Task TouchTest()
+    {
+        var ok = true;
+        void Check(bool c, string msg) { GD.Print((c ? "  [PASS] " : "  [FAIL] ") + msg); ok &= c; }
+        async Task Frames(int n = 3) { for (int i = 0; i < n; i++) await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame); }
+        async Task Touch(int idx, Vector2 pos, bool down) { Input.ParseInputEvent(new InputEventScreenTouch { Index = idx, Position = pos, Pressed = down }); await Frames(); }
+        async Task Drag(int idx, Vector2 from, Vector2 to, int steps = 6)
+        {
+            for (int s = 1; s <= steps; s++)
+            {
+                var a = from.Lerp(to, (s - 1) / (float)steps); var b = from.Lerp(to, s / (float)steps);
+                Input.ParseInputEvent(new InputEventScreenDrag { Index = idx, Position = b, Relative = b - a, ScreenRelative = b - a });
+                await Frames(1);
+            }
+            await Frames();
+        }
+
+        await Import(ProjectSettings.GlobalizePath("res://test/humanoid.glb"));
+        _rigPreset.Select(RigPreset.List().IndexOf("humanoid"));
+        await OnFitPressed();
+        await Frames(5);
+        GD.Print($"Touch test: viewport {GetViewport().GetVisibleRect().Size}, pick radius {_gizmo.PickRadius}");
+
+        // 1. one finger on empty space (top-left sky) orbits
+        float yaw0 = _orbit.Yaw;
+        var p0 = new Vector2(120, 120);
+        await Touch(0, p0, true);
+        await Drag(0, p0, p0 + new Vector2(150, 0));
+        await Touch(0, p0 + new Vector2(150, 0), false);
+        Check(MathF.Abs(_orbit.Yaw - yaw0) > 0.5f, $"one-finger drag on empty space orbits (yaw {yaw0:F2} -> {_orbit.Yaw:F2})");
+
+        // 2. one finger on a joint moves the joint, not the camera
+        int hand = _p.Rig.Find("LeftHand");
+        var head0 = _p.Rig.Bones[hand].Head;
+        var hp = _orbit.Cam.UnprojectPosition(head0);
+        float yaw1 = _orbit.Yaw;
+        await Touch(0, hp, true);
+        await Drag(0, hp, hp + new Vector2(0, -40));
+        await Touch(0, hp + new Vector2(0, -40), false);
+        var moved = _p.Rig.Bones[hand].Head.DistanceTo(head0);
+        Check(moved > 0.01f && MathF.Abs(_orbit.Yaw - yaw1) < 1e-4f, $"one-finger drag on a joint moves it {moved:F3} m, camera yaw unchanged ({yaw1:F3} -> {_orbit.Yaw:F3})");
+
+        // 3. two-finger spread zooms in; no orbit while two fingers are down
+        float d0 = _orbit.Distance, yaw2 = _orbit.Yaw;
+        Vector2 a = new(300, 400), b = new(500, 400);
+        await Touch(0, a, true);
+        await Touch(1, b, true);
+        await Drag(1, b, b + new Vector2(200, 0));
+        await Touch(1, b + new Vector2(200, 0), false);
+        await Touch(0, a, false);
+        Check(_orbit.Distance < d0 * 0.8f, $"two-finger spread zooms in (distance {d0:F2} -> {_orbit.Distance:F2})");
+        Check(MathF.Abs(_orbit.Yaw - yaw2) < 1e-4f, $"no orbit during pinch (yaw {yaw2:F3} -> {_orbit.Yaw:F3})");
+        Check(OrbitCamera.TouchCount == 0 && !OrbitCamera.MultiTouch, $"all fingers released (count {OrbitCamera.TouchCount})");
+
+        // 4. a finger on the side panel does not orbit
+        float yaw3 = _orbit.Yaw;
+        var vp = GetViewport().GetVisibleRect().Size;
+        var pp = new Vector2(vp.X - 120, 30);   // over the "1 · Import" header, inside the panel (nothing to toggle)
+        await Touch(0, pp, true);
+        await Drag(0, pp, pp + new Vector2(-150, 0));
+        await Touch(0, pp + new Vector2(-150, 0), false);
+        Check(MathF.Abs(_orbit.Yaw - yaw3) < 1e-4f, $"drag over the panel does not orbit (yaw {yaw3:F3} -> {_orbit.Yaw:F3})");
+        Check(_p.Rig.Bones[hand].Deform, "LeftHand still deforms (no control toggled by the test)");
+
+        await Shot(ProjectSettings.GlobalizePath("user://touch_test.png"));
+        GD.Print("Touch test: " + (ok ? "all passed" : "FAILED"));
+        GetTree().Quit(ok ? 0 : 1);
+    }
+
     async Task Shot(string path)
     {
         for (int f = 0; f < 5; f++) await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
@@ -133,6 +268,7 @@ public partial class Main : Node3D
         _orbit = new OrbitCamera();
         AddChild(_orbit);
         _gizmo = new BoneGizmo();
+        if (_touchUi) _gizmo.PickRadius = 28;   // fingertip-sized (logical pixels, after UI scale)
         AddChild(_gizmo);
         _gizmo.Cam = null;
         _gizmo.SelectionChanged += b => { if (b >= 0 && b < _boneList.ItemCount) _boneList.Select(b); OnBoneSelected(b); };
@@ -174,7 +310,11 @@ public partial class Main : Node3D
 
         Header(vb, "1 · Import");
         _faceNegZ = Check(vb, "Model faces -Z (rotate 180° on import)", false, _ => { });
-        var bImport = Btn(vb, "Import glTF…", OnImportPressed);
+        var ib = new HBoxContainer();
+        vb.AddChild(ib);
+        var bImport = Btn(ib, "Import glTF…", OnImportPressed);
+        var bFrame = Btn(ib, "Frame model", () => { if (_p.Source != null) _orbit.Frame(_p.Source.Mesh.Bounds()); });
+        bFrame.TooltipText = "Re-centre the camera on the model";
         _showSource = Check(vb, "Show source", true, v => { if (_sourceNode != null) _sourceNode.Visible = v; });
 
         Header(vb, "2 · Skeleton");
@@ -193,6 +333,7 @@ public partial class Main : Node3D
         _btnSym = Btn(eb, "Symmetrize", OnSymmetrize);
         _btnSym.TooltipText = "Copy every Left* bone onto its Right* partner (mirrored), creating missing partners";
         _btnAddBone.TooltipText = "Add a bone under the selected one";
+        if (_touchUi) Hint(vb, "Symmetrize copies every Left* bone onto its Right* partner, creating missing ones.");
         _btnDelBone.TooltipText = "Delete the selected bone; its children move to its parent";
         var rn = new HBoxContainer();
         vb.AddChild(rn);
@@ -218,6 +359,7 @@ public partial class Main : Node3D
         _retopoMode.ItemSelected += _ => UpdateVoxelInfo();
         _spacing = Option(vb, "Spacing (quad mode)", new[] { "Auto (recommended)", "Uniform", "Adaptive" });
         _spacing.TooltipText = "Adaptive spends more quads where the surface curves. Auto builds both and keeps the closer match.";
+        if (_touchUi) Hint(vb, "Auto builds uniform and adaptive spacing and keeps the closer match.");
         _tris = Spin(vb, "Target triangles", 200, 200000, 8000, 100, _ => UpdateVoxelInfo());
         _voxel = Spin(vb, "Voxel resolution (voxel mode)", 64, 512, 256, 16, _ => UpdateVoxelInfo());
         _voxelInfo = new Label { Modulate = new Color(1, 1, 1, 0.7f), AutowrapMode = TextServer.AutowrapMode.WordSmart, CustomMinimumSize = new Vector2(300, 0) };
@@ -259,6 +401,28 @@ public partial class Main : Node3D
         _log.AddThemeFontSizeOverride("normal_font_size", 11);
         vb.AddChild(_log);
         UpdateVoxelInfo();
+        if (_touchUi)
+        {
+            EnlargeForTouch(vb);
+            // keep clear of rounded corners / home indicator
+            var safe = DisplayServer.GetDisplaySafeArea();
+            var screen = DisplayServer.ScreenGetSize();
+            float sc = GetWindow().ContentScaleFactor;
+            if (_mobile && safe.Size.X > 0)
+            {
+                panel.OffsetTop = safe.Position.Y / sc;
+                panel.OffsetBottom = -(screen.Y - safe.End.Y) / sc;
+                panel.OffsetRight = -(screen.X - safe.End.X) / sc;
+                panel.OffsetLeft = panel.OffsetRight - 420;
+            }
+        }
+    }
+
+    static void Hint(Container c, string text)
+    {
+        var l = new Label { Text = text, Modulate = new Color(1, 1, 1, 0.7f), AutowrapMode = TextServer.AutowrapMode.WordSmart, CustomMinimumSize = new Vector2(300, 0) };
+        l.AddThemeFontSizeOverride("font_size", 13);
+        c.AddChild(l);
     }
 
     static void Header(Container c, string text)
@@ -330,6 +494,8 @@ public partial class Main : Node3D
             GD.Print(s);
         }
         if (_gizmo.Cam == null && _orbit.Cam != null) _gizmo.Cam = _orbit.Cam;
+        _memSampleT += delta;
+        if (_memSampleT > 0.25) { _memSampleT = 0; SampleMemory(); }
     }
 
     void UpdateVoxelInfo()
@@ -375,7 +541,9 @@ public partial class Main : Node3D
     {
         if (_busy) return;
         _busy = true;
-        _status.Text = "Working: " + what + "…";
+        _status.Text = "Working: " + what + "…" + (_mobile ? " (keep ModelMate open: switching apps pauses it)" : "");
+        if (_mobile) DisplayServer.ScreenSetKeepOn(true);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         UpdateButtons();
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame); // let the label repaint
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
@@ -393,6 +561,9 @@ public partial class Main : Node3D
         finally
         {
             _busy = false;
+            if (_mobile) DisplayServer.ScreenSetKeepOn(false);
+            SampleMemory();
+            Log($"[{what}] {sw.Elapsed.TotalSeconds:0.0} s, {MemoryText()}");
             UpdateButtons();
         }
     }
@@ -401,15 +572,8 @@ public partial class Main : Node3D
 
     void OnImportPressed()
     {
-        var fd = new FileDialog
-        {
-            FileMode = FileDialog.FileModeEnum.OpenFile, Access = FileDialog.AccessEnum.Filesystem,
-            Filters = new[] { "*.glb, *.gltf ; glTF models" }, UseNativeDialog = true, Title = "Import glTF",
-        };
-        AddChild(fd);
-        fd.FileSelected += path => { _ = Import(path); fd.QueueFree(); };
-        fd.Canceled += () => fd.QueueFree();
-        fd.PopupCentered(new Vector2I(900, 600));
+        var fd = OpenDialog("Import glTF", "*.glb, *.gltf ; glTF models", "user://Models");
+        fd.FileSelected += path => { _ = Import(ProjectSettings.GlobalizePath(path)); fd.QueueFree(); };
     }
 
     async Task Import(string path)
@@ -612,15 +776,32 @@ public partial class Main : Node3D
 
     void OnLoadPresetPressed()
     {
-        var fd = new FileDialog
+        var fd = OpenDialog("Load rig preset", "*.json ; Rig preset", "user://rigs");
+        fd.FileSelected += path => { _ = FitWith(ProjectSettings.GlobalizePath(path)); fd.QueueFree(); };
+    }
+
+    /// <summary>
+    /// Open-file dialog. Desktop: the system dialog over the whole filesystem. Mobile: Godot's own dialog inside the
+    /// app's folder (visible in the Files app), starting in the given subfolder.
+    /// </summary>
+    FileDialog OpenDialog(string title, string filter, string mobileDir)
+    {
+        var fd = new FileDialog { FileMode = FileDialog.FileModeEnum.OpenFile, Filters = new[] { filter }, Title = title };
+        if (_touchUi)
         {
-            FileMode = FileDialog.FileModeEnum.OpenFile, Access = FileDialog.AccessEnum.Filesystem,
-            Filters = new[] { "*.json ; Rig preset" }, UseNativeDialog = true, Title = "Load rig preset",
-        };
+            fd.Access = FileDialog.AccessEnum.Userdata;
+            fd.UseNativeDialog = false;
+            fd.CurrentDir = mobileDir;
+        }
+        else
+        {
+            fd.Access = FileDialog.AccessEnum.Filesystem;
+            fd.UseNativeDialog = true;
+        }
         AddChild(fd);
-        fd.FileSelected += path => { _ = FitWith(path); fd.QueueFree(); };
         fd.Canceled += () => fd.QueueFree();
         fd.PopupCentered(new Vector2I(900, 600));
+        return fd;
     }
 
     void InvalidateWeights()
@@ -644,6 +825,14 @@ public partial class Main : Node3D
 
     async void OnExportPressed()
     {
+        if (_touchUi)
+        {
+            var name = (_sourcePath != null ? System.IO.Path.GetFileNameWithoutExtension(_sourcePath) : "model") + "_rigged.glb";
+            var dest = System.IO.Path.Combine(ProjectSettings.GlobalizePath("user://Exports"), name);
+            await ExportTo(dest);
+            Log($"Saved to Files › On My iPad › ModelMate › Exports › {name}");
+            return;
+        }
         var fd = new FileDialog
         {
             FileMode = FileDialog.FileModeEnum.SaveFile, Access = FileDialog.AccessEnum.Filesystem,
@@ -684,6 +873,7 @@ public partial class Main : Node3D
             await Task.Run(() => _p.Bake());
             var cl = new CheckList();
             Verify.PreExport(cl, _p.Welded, _p.Split, _p.SplitOrigin, _p.SplitBones, _p.SplitWeights, _p.AppliedTriBudget);
+            ChartUnwrap.CheckLayout(cl, $"UV layout ({UvUnwrap.LastUsed})", _p.Split, _p.S.TexSize, UvUnwrap.LastUsed == "charts");
             Verify.BakedTexture(cl, _p.AlbedoRgba);
             Verify.QuadMesh(cl, _p);
             Verify.LimbSides(cl, _p);

@@ -44,12 +44,6 @@ public static class RigPreset
         [JsonPropertyName("poses")] public Dictionary<string, List<PoseRotDto>> Poses { get; set; } = new();
     }
 
-    static readonly JsonSerializerOptions Json = new()
-    {
-        WriteIndented = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-    };
-
     public const string BuiltinDir = "res://rigs";
     public const string UserDir = "user://rigs";
 
@@ -58,33 +52,46 @@ public static class RigPreset
     {
         var names = new List<string> { "humanoid", "single" };
         foreach (var dir in new[] { BuiltinDir, UserDir })
-        {
-            var abs = ProjectSettings.GlobalizePath(dir);
-            if (!Directory.Exists(abs)) continue;
-            foreach (var f in Directory.GetFiles(abs, "*.json").OrderBy(x => x))
+            foreach (var f in JsonFiles(dir))
             {
                 var n = Path.GetFileNameWithoutExtension(f);
                 if (!names.Contains(n)) names.Add(n);
             }
-        }
         return names;
     }
 
-    /// <summary>Resolves a preset name or a .json path to a file path (null for code presets or unknown names).</summary>
+    /// <summary>
+    /// JSON file names in a res:// or user:// directory. Uses Godot's DirAccess, which also lists res:// inside an
+    /// exported app's .pck (System.IO can't see into it).
+    /// </summary>
+    static IEnumerable<string> JsonFiles(string dir)
+    {
+        if (!DirAccess.DirExistsAbsolute(dir)) return Array.Empty<string>();
+        return DirAccess.GetFilesAt(dir).Where(f => f.EndsWith(".json", StringComparison.OrdinalIgnoreCase)).OrderBy(x => x).ToArray();
+    }
+
+    /// <summary>
+    /// Resolves a preset name or a .json path to a readable path (null for code presets or unknown names).
+    /// res:// paths stay virtual so they can be read from an exported .pck; user:// paths become absolute.
+    /// </summary>
     public static string Resolve(string nameOrPath)
     {
         if (nameOrPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
-            return ProjectSettings.GlobalizePath(nameOrPath);
+            return nameOrPath.StartsWith("res://") ? nameOrPath : ProjectSettings.GlobalizePath(nameOrPath);
         foreach (var dir in new[] { UserDir, BuiltinDir })
         {
-            var p = Path.Combine(ProjectSettings.GlobalizePath(dir), nameOrPath + ".json");
-            if (File.Exists(p)) return p;
+            var p = dir + "/" + nameOrPath + ".json";
+            if (Godot.FileAccess.FileExists(p)) return dir == BuiltinDir ? p : ProjectSettings.GlobalizePath(p);
         }
         return null;
     }
 
-    public static PresetDto Load(string path) =>
-        JsonSerializer.Deserialize<PresetDto>(File.ReadAllText(path), Json) ?? throw new Exception($"empty preset {path}");
+    public static PresetDto Load(string path)
+    {
+        var text = path.StartsWith("res://") ? Godot.FileAccess.GetFileAsString(path) : File.ReadAllText(path);
+        if (string.IsNullOrEmpty(text)) throw new Exception($"could not read preset {path}");
+        return JsonSerializer.Deserialize(text, RigJsonContext.Default.PresetDto) ?? throw new Exception($"empty preset {path}");
+    }
 
     /// <summary>Builds and fits a skeleton for the model bounds. Bones with a center mode are centered in the volume.</summary>
     public static RigSkeleton Fit(string nameOrPath, Aabb box, Bvh bvh, Action<string> log, out PresetDto preset)
@@ -171,7 +178,15 @@ public static class RigPreset
     {
         path ??= Path.Combine(ProjectSettings.GlobalizePath(UserDir), name + ".json");
         Directory.CreateDirectory(Path.GetDirectoryName(path));
-        File.WriteAllText(path, JsonSerializer.Serialize(ToDto(s, box, name, description, poses), Json));
+        File.WriteAllText(path, JsonSerializer.Serialize(ToDto(s, box, name, description, poses), RigJsonContext.Default.PresetDto));
         return path;
     }
 }
+
+/// <summary>
+/// Source-generated JSON for presets. Reflection-based System.Text.Json is disabled under NativeAOT (iOS builds),
+/// so serialization must not depend on it.
+/// </summary>
+[JsonSourceGenerationOptions(WriteIndented = true, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+[JsonSerializable(typeof(RigPreset.PresetDto))]
+internal partial class RigJsonContext : JsonSerializerContext { }
