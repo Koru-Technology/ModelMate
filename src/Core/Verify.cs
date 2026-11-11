@@ -155,24 +155,13 @@ public static class Verify
         return m.VertexCount - edges.Count + m.TriCount;
     }
 
-    public static void BakedTexture(CheckList cl, byte[] rgba)
-    {
-        long sum = 0; int distinct = 0; var seen = new HashSet<int>();
-        for (int i = 0; i < rgba.Length; i += 4)
-        {
-            sum += rgba[i] + rgba[i + 1] + rgba[i + 2];
-            if (seen.Count < 64 && seen.Add(rgba[i] << 16 | rgba[i + 1] << 8 | rgba[i + 2])) distinct++;
-        }
-        cl.Check(sum > 0 && distinct > 1, $"baked texture non-empty ({distinct}+ distinct colors)");
-    }
-
     /// <summary>A rig counts as humanoid when it has the core SkeletonProfileHumanoid bones (extra bones allowed).</summary>
     public static bool IsHumanoid(RigSkeleton r) => r != null &&
         new[] { "Hips", "Spine", "Head", "LeftUpperArm", "LeftLowerArm", "RightUpperArm", "RightLowerArm", "LeftUpperLeg", "RightUpperLeg" }
             .All(n => r.Find(n) >= 0);
 
     /// <summary>Re-imports the exported glb, poses LeftUpperArm, CPU-skins and checks deformation.</summary>
-    public static void RoundTrip(CheckList cl, string path, bool humanoid, bool expectNormalMap = false)
+    public static void RoundTrip(CheckList cl, string path, bool humanoid)
     {
         var doc = new GltfDocument();
         var state = new GltfState();
@@ -187,10 +176,9 @@ public static class Verify
             cl.Check(skel != null && mi != null && mi.Skin != null, "re-imported scene has Skeleton3D + skinned MeshInstance3D");
             if (skel == null || mi?.Skin == null) return;
 
-            var mat = mi.Mesh.SurfaceGetMaterial(0) as BaseMaterial3D ?? mi.GetActiveMaterial(0) as BaseMaterial3D;
-            cl.Check(mat?.AlbedoTexture != null, "re-imported material has albedo texture");
-            if (expectNormalMap)
-                cl.Check(mat != null && mat.NormalEnabled && mat.NormalTexture != null, "re-imported material has normal map");
+            var uvArr = mi.Mesh.SurfaceGetArrays(0);
+            var uvs = uvArr[(int)Mesh.ArrayType.TexUV].VariantType == Variant.Type.Nil ? null : uvArr[(int)Mesh.ArrayType.TexUV].AsVector2Array();
+            cl.Check(uvs != null && uvs.Length == uvArr[(int)Mesh.ArrayType.Vertex].AsVector3Array().Length, "re-imported mesh has UVs");
 
             int nb = skel.GetBoneCount();
             var names = Enumerable.Range(0, nb).Select(skel.GetBoneName).ToList();

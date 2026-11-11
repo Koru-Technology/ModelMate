@@ -98,26 +98,6 @@ public static class UvUnwrap
         return (m, origin);
     }
 
-    /// <summary>[main] MikkTSpace tangents via SurfaceTool (same generator Godot uses on import).</summary>
-    public static float[] GenerateTangents(MeshData m)
-    {
-        var arrays = new Godot.Collections.Array();
-        arrays.Resize((int)Mesh.ArrayType.Max);
-        arrays[(int)Mesh.ArrayType.Vertex] = m.Pos;
-        arrays[(int)Mesh.ArrayType.Normal] = m.Nrm;
-        arrays[(int)Mesh.ArrayType.TexUV] = m.Uv;
-        arrays[(int)Mesh.ArrayType.Index] = ToGodotWinding(m.Tris);
-        var st = new SurfaceTool();
-        st.CreateFromArrays(arrays);
-        st.GenerateTangents();
-        var outArr = st.CommitToArrays();
-        var v = outArr[(int)Mesh.ArrayType.Vertex].AsVector3Array();
-        if (v.Length != m.VertexCount) throw new Exception($"GenerateTangents changed vertex count {m.VertexCount} -> {v.Length}");
-        for (int i = 0; i < v.Length; i++)
-            if ((v[i] - m.Pos[i]).LengthSquared() > 1e-12f) throw new Exception("GenerateTangents reordered vertices");
-        return outArr[(int)Mesh.ArrayType.Tangent].AsFloat32Array();
-    }
-
     static Dictionary<Vector3, int> BuildPosMap(Vector3[] pos)
     {
         var d = new Dictionary<Vector3, int>();

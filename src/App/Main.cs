@@ -180,11 +180,13 @@ public partial class Main : Node3D
         outDir = ProjectSettings.GlobalizePath(outDir);
         System.IO.Directory.CreateDirectory(outDir);
         await Import(ProjectSettings.GlobalizePath(input));
+        await Shot(System.IO.Path.Combine(outDir, "ui_source.png"));
         _tris.Value = tris;
         int ri = RigPreset.List().IndexOf(rig);
         if (ri >= 0) { _rigPreset.Select(ri); await OnFitPressed(); }
         else await FitWith(rig);
         await OnRetopoPressed();
+        await Shot(System.IO.Path.Combine(outDir, "ui_retopo.png"));
         await OnWeightsPressed();
         // humanoid: upper arm / hand; other rigs: the first Left* bone
         string heatBone = _p.Rig.Find("LeftUpperArm") >= 0 ? "LeftUpperArm" : _p.Rig.Bones.First(b => b.Name.StartsWith("Left")).Name;
@@ -305,11 +307,12 @@ public partial class Main : Node3D
         var env = new Godot.Environment
         {
             BackgroundMode = Godot.Environment.BGMode.Color, BackgroundColor = new Color(0.15f, 0.16f, 0.19f),
-            AmbientLightSource = Godot.Environment.AmbientSource.Color, AmbientLightColor = new Color(0.45f, 0.45f, 0.5f),
+            // a dim grey world, like Blender's default, so faces turned away from the light aren't black
+            AmbientLightSource = Godot.Environment.AmbientSource.Color, AmbientLightColor = new Color(0.25f, 0.25f, 0.25f),
         };
         AddChild(new WorldEnvironment { Environment = env });
-        AddChild(new DirectionalLight3D { RotationDegrees = new Vector3(-45, 35, 0), ShadowEnabled = false });
-        AddChild(new DirectionalLight3D { RotationDegrees = new Vector3(-20, 210, 0), LightEnergy = 0.4f });
+        // one light source, from the front, upper right
+        AddChild(new DirectionalLight3D { RotationDegrees = new Vector3(-40, 30, 0), ShadowEnabled = false });
         _orbit = new OrbitCamera();
         AddChild(_orbit);
         _gizmo = new BoneGizmo();
@@ -319,16 +322,7 @@ public partial class Main : Node3D
         _gizmo.SelectionChanged += b => { if (b >= 0 && b < _boneList.ItemCount) _boneList.Select(b); OnBoneSelected(b); };
         _gizmo.Edited += () => { InvalidateWeights(); };
         _gizmo.EditBlocked += () => Log("Skeleton is posed: press 'Reset pose' to edit joints.");
-        // floor
-        _floor = new MeshInstance3D
-        {
-            Mesh = new PlaneMesh { Size = new Vector2(4, 4) },
-            MaterialOverride = new StandardMaterial3D { AlbedoColor = new Color(0.22f, 0.23f, 0.26f) },
-        };
-        AddChild(_floor);
     }
-
-    MeshInstance3D _floor;
 
     // ------------------------------------------------------------------ UI
 
@@ -415,7 +409,7 @@ public partial class Main : Node3D
         _triInfo = new Label { AutowrapMode = TextServer.AutowrapMode.WordSmart, CustomMinimumSize = new Vector2(300, 0) };
         vb.AddChild(_triInfo);
         _showRetopo = Check(vb, "Show retopo mesh", true, _ => RefreshVisibility());
-        _wire = Check(vb, "Wireframe", false, v => GetViewport().DebugDraw = v ? Viewport.DebugDrawEnum.Wireframe : Viewport.DebugDrawEnum.Disabled);
+        _wire = Check(vb, "Wireframe", true, DisplayMesh.SetWire);
 
         Header(vb, "4 · Weights");
         _falloff = Spin(vb, "Falloff exponent", 1, 8, 3, 0.5);
@@ -433,7 +427,8 @@ public partial class Main : Node3D
         _btnResetPose = Btn(hb, "Reset pose", ResetPose);
 
         Header(vb, "6 · Export");
-        _texSize = Option(vb, "Texture size", new[] { "512", "1024", "2048", "4096" });
+        _texSize = Option(vb, "UV padding for", new[] { "512", "1024", "2048", "4096" });
+        _texSize.TooltipText = "Texture resolution you will paint at: UV islands get a few pixels of gap at this size";
         _texSize.Select(1);
         _btnExport = Btn(vb, _touchUi ? "Export & share…" : "Export .glb…", OnExportPressed);
 
@@ -704,16 +699,13 @@ public partial class Main : Node3D
         {
             ClearAll();
             _p.S.RotateY = _faceNegZ.ButtonPressed ? 180 : 0;
-            _p.Import(path, true, out var scene);
+            _p.Import(path);
             _sourcePath = path;
-            _sourceNode = (Node3D)scene;
+            // shown from the imported mesh data, not the file's scene: no lights, cameras or textures from the file
+            _sourceNode = new MeshInstance3D { Mesh = DisplayMesh.ForSource(_p.Source), MaterialOverride = DisplayMesh.Material };
             AddChild(_sourceNode);
             _sourceNode.Visible = _showSource.ButtonPressed;
-            var box = _p.Source.Mesh.Bounds();
-            _orbit.Frame(box);
-            float ext = box.Size.Length();
-            _floor.Position = new Vector3(box.GetCenter().X, box.Position.Y - ext * 0.002f, box.GetCenter().Z);
-            ((PlaneMesh)_floor.Mesh).Size = new Vector2(ext * 2, ext * 2);
+            _orbit.Frame(_p.Source.Mesh.Bounds());
             UpdateVoxelInfo();
             Log($"Imported {System.IO.Path.GetFileName(path)}");
             return Task.CompletedTask;
@@ -998,18 +990,15 @@ public partial class Main : Node3D
             _status.Text = "Working: UV unwrap…";
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             _p.Unwrap();                                   // main thread (Godot API)
-            _status.Text = "Working: texture bake…";
-            await Task.Run(() => _p.Bake());
             var cl = new CheckList();
             Verify.PreExport(cl, _p.Welded, _p.Split, _p.SplitOrigin, _p.SplitBones, _p.SplitWeights, _p.AppliedTriBudget);
             ChartUnwrap.CheckLayout(cl, $"UV layout ({UvUnwrap.LastUsed})", _p.Split, _p.S.TexSize, UvUnwrap.LastUsed == "charts");
-            Verify.BakedTexture(cl, _p.AlbedoRgba);
             Verify.QuadMesh(cl, _p);
             Verify.LimbSides(cl, _p);
             var root = _p.BuildScene(System.IO.Path.GetFileNameWithoutExtension(outPath));
             Exporter.ExportGlb(root, outPath);
             root.Free();
-            Verify.RoundTrip(cl, outPath, Verify.IsHumanoid(_p.Rig), _p.S.NormalMap);
+            Verify.RoundTrip(cl, outPath, Verify.IsHumanoid(_p.Rig));
             Log($"Exported {outPath}");
             cl.Print(Log);
             Log(cl.AllOk ? "All checks passed." : "Some checks FAILED — see above.");
@@ -1020,29 +1009,14 @@ public partial class Main : Node3D
 
     // ------------------------------------------------------------------ display
 
-    static ArrayMesh MakeMesh(MeshData m, Color[] colors, int[] bones, float[] weights)
-    {
-        var arrays = new Godot.Collections.Array();
-        arrays.Resize((int)Mesh.ArrayType.Max);
-        arrays[(int)Mesh.ArrayType.Vertex] = m.Pos;
-        arrays[(int)Mesh.ArrayType.Normal] = m.Nrm;
-        if (colors != null) arrays[(int)Mesh.ArrayType.Color] = colors;
-        if (bones != null) { arrays[(int)Mesh.ArrayType.Bones] = bones; arrays[(int)Mesh.ArrayType.Weights] = weights; }
-        arrays[(int)Mesh.ArrayType.Index] = UvUnwrap.ToGodotWinding(m.Tris);
-        var am = new ArrayMesh();
-        am.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
-        return am;
-    }
-
-    static StandardMaterial3D RetopoMaterial() => new()
-    {
-        AlbedoColor = new Color(0.75f, 0.76f, 0.8f), Roughness = 0.8f, VertexColorUseAsAlbedo = true,
-    };
+    /// <summary>The remeshed model: plain grey, or the selected bone's weights when the heatmap is on.</summary>
+    ArrayMesh RetopoDisplayMesh(bool skinned) =>
+        DisplayMesh.Build(_p.Welded, HeatColors(), skinned ? _p.WeldedBones : null, skinned ? _p.WeldedWeights : null);
 
     void ShowRetopoStatic()
     {
         _retopoMI?.QueueFree();
-        _retopoMI = new MeshInstance3D { Mesh = MakeMesh(_p.Welded, HeatColors(), null, null), MaterialOverride = RetopoMaterial() };
+        _retopoMI = new MeshInstance3D { Mesh = RetopoDisplayMesh(false), MaterialOverride = DisplayMesh.Material };
         AddChild(_retopoMI);
         RefreshVisibility();
     }
@@ -1075,8 +1049,8 @@ public partial class Main : Node3D
         _previewSkel.ResetBonePoses();
         _previewMI = new MeshInstance3D
         {
-            Mesh = MakeMesh(_p.Welded, HeatColors(), _p.WeldedBones, _p.WeldedWeights),
-            MaterialOverride = RetopoMaterial(), Skin = skin,
+            Mesh = RetopoDisplayMesh(true),
+            MaterialOverride = DisplayMesh.Material, Skin = skin,
         };
         _previewSkel.AddChild(_previewMI);
         _previewMI.Skeleton = new NodePath("..");
@@ -1099,9 +1073,9 @@ public partial class Main : Node3D
         var cols = new Color[m.VertexCount];
         int bone = _gizmo.Selected;
         bool heat = _heat != null && _heat.ButtonPressed && bone >= 0 && _p.WeldedBones != null && !_weightsStale;
+        if (!heat) return null;
         for (int v = 0; v < cols.Length; v++)
         {
-            if (!heat) { cols[v] = Colors.White; continue; }
             float w = 0;
             for (int k = 0; k < 4; k++) if (_p.WeldedBones[4 * v + k] == bone) w += _p.WeldedWeights[4 * v + k];
             // blue → green → red
@@ -1115,9 +1089,9 @@ public partial class Main : Node3D
     {
         if (_p.Welded == null) return;
         if (_previewMI != null)
-            _previewMI.Mesh = MakeMesh(_p.Welded, HeatColors(), _p.WeldedBones, _p.WeldedWeights);
+            _previewMI.Mesh = RetopoDisplayMesh(true);
         else if (_retopoMI != null)
-            _retopoMI.Mesh = MakeMesh(_p.Welded, HeatColors(), null, null);
+            _retopoMI.Mesh = RetopoDisplayMesh(false);
     }
 
     bool _syncingSliders;

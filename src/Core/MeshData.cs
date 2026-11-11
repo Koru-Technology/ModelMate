@@ -113,61 +113,11 @@ public sealed class MeshData
     }
 }
 
-/// <summary>Raw RGBA8 texture, sampled on worker threads.</summary>
-public sealed class SourceTexture
-{
-    public byte[] Rgba;
-    public int W, H;
-
-    Color Texel(int x, int y)
-    {
-        x = ((x % W) + W) % W;
-        y = ((y % H) + H) % H;
-        int i = 4 * (y * W + x);
-        return new Color(Rgba[i] / 255f, Rgba[i + 1] / 255f, Rgba[i + 2] / 255f, Rgba[i + 3] / 255f);
-    }
-
-    public Color SampleBilinear(Vector2 uv)
-    {
-        float fx = uv.X * W - 0.5f, fy = uv.Y * H - 0.5f;
-        int x0 = (int)MathF.Floor(fx), y0 = (int)MathF.Floor(fy);
-        float tx = fx - x0, ty = fy - y0;
-        var a = Texel(x0, y0).Lerp(Texel(x0 + 1, y0), tx);
-        var b = Texel(x0, y0 + 1).Lerp(Texel(x0 + 1, y0 + 1), tx);
-        return a.Lerp(b, ty);
-    }
-}
-
-public sealed class SourceMaterial
-{
-    public Color Albedo = Colors.White;
-    public SourceTexture Tex;
-    public bool Transparent;   // alpha-blended overlay (e.g. a glossy duplicate shell): ignored when baking colour
-}
-
-/// <summary>Imported high-poly source: merged mesh in world space plus per-triangle material info.</summary>
+/// <summary>
+/// Imported high-poly source: all meshes merged into one world-space triangle mesh. Geometry only: the file's
+/// materials, textures and vertex colours are not read (ModelMate prepares meshes for a PBR painter).
+/// </summary>
 public sealed class SourceMesh
 {
-    public MeshData Mesh;          // Pos/Nrm/Uv/Tris (Uv may be null)
-    public Color[] Col;            // optional vertex colors
-    public int[] TriMat;           // material index per triangle
-    public List<SourceMaterial> Materials = new();
-
-    public Color SampleColor(int tri, float u, float v, float w)
-    {
-        var m = Mesh;
-        int a = m.Tris[3 * tri], b = m.Tris[3 * tri + 1], c = m.Tris[3 * tri + 2];
-        var mat = Materials[TriMat[tri]];
-        Color col = mat.Albedo;
-        if (mat.Tex != null && m.Uv != null)
-        {
-            var uv = m.Uv[a] * u + m.Uv[b] * v + m.Uv[c] * w;
-            col *= mat.Tex.SampleBilinear(uv);
-        }
-        if (Col != null)
-        {
-            col *= Col[a] * u + Col[b] * v + Col[c] * w;
-        }
-        return col;
-    }
+    public MeshData Mesh;   // Pos/Nrm/Tris
 }

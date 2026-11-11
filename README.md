@@ -9,7 +9,6 @@
 - **[Godot Engine](https://godotengine.org) 4.7** (MIT): the runtime, UI, rendering, glTF import and export (`GLTFDocument`), `Skeleton3D`/`Skin`, and `SkeletonProfileHumanoid` (the bone names and hierarchy of the humanoid rig).
 - **[.NET 8](https://dotnet.microsoft.com) and the Godot .NET SDK** (MIT): the C# toolchain.
 - **[xatlas](https://github.com/jpcy/xatlas)** (MIT): UV unwrapping, called through Godot's `ArrayMesh.LightmapUnwrap`. Godot compiles it into the editor only, so exported apps (the iPad build) use the built-in chart unwrapper instead (`ChartUnwrap.cs`).
-- **[MikkTSpace](https://github.com/mmikk/MikkTSpace)** (zlib-style license) by Morten Mikkelsen: tangent generation for normal maps, called through Godot's `SurfaceTool.GenerateTangents`.
 
 **Algorithms implemented from publications (no code copied)**
 - **Surface Nets**: S. Gibson, *Constrained Elastic Surface Nets*, MICCAI 1998. Used in the voxel remesher (`SurfaceNets.cs`).
@@ -20,14 +19,16 @@
 - **Ray–triangle intersection**: T. Möller and B. Trumbore, *Fast, Minimum Storage Ray/Triangle Intersection*, 1997 (`Geo.RayTri`).
 
 **Tools used only during development (not part of the app)**
-- **[Pillow](https://python-pillow.org) and [NumPy](https://numpy.org)** (Python): compared rendered screenshots when checking the normal-map bake.
+- **[Pillow](https://python-pillow.org) and [NumPy](https://numpy.org)** (Python): compared rendered screenshots during development.
 - **curl**: downloaded the Instant Meshes reference source for porting.
 
 ---
 
-A small Godot 4.7 (C#) tool. It turns an unrigged static glTF (a dense sculpt or AI-generated mesh) into a game-ready rigged `.glb`:
+A small Godot 4.7 (C#) tool. It turns an unrigged static glTF (a dense sculpt or AI-generated mesh) into a rigged, UV-unwrapped `.glb`, ready to texture in a PBR painter:
 
-**import → fit skeleton (humanoid, creature or your own) → retopologize (quad or voxel) → auto skin weights → UV unwrap → bake albedo and normal maps → export**
+**import → fit skeleton (humanoid, creature or your own) → retopologize (quad or voxel) → auto skin weights → UV unwrap → export**
+
+ModelMate works on geometry only. The imported file's materials, textures, vertex paint, lights and cameras are ignored, and the export carries the mesh, UVs, skeleton and weights with a plain untextured material. The viewport shows models like Blender's default cube: grey matte under one light, with the wireframe on top (toggle *Wireframe*). On a dense sculpt the lines fade out until you zoom in.
 
 Everything runs inside Godot, with no Blender or other external tools. With the humanoid rig, bone names and parent bones match Godot's `SkeletonProfileHumanoid`, which is what humanoid retargeting expects. To retarget, open the `.glb` in your game project's import dialog and set Skeleton3D → Retarget → Bone Map → `SkeletonProfileHumanoid`.
 
@@ -47,7 +48,7 @@ $G --path .                      # UI
 3. Pick a mode and a **target triangle count**, then click **Retopologize**. Quad mode is the default. In voxel mode the voxel resolution sets the detail and the result is decimated to the target.
 4. Click **Compute weights**. Tick *Show selected bone's weights* to see a heatmap, choosing the bone in the list or by clicking a joint.
 5. Preview poses with the rotation sliders or **Test pose** (humanoid: a standard bend; rigs from a preset with named poses, such as `blob_biped`: each press shows the next pose). Use **Reset pose** before editing joints again.
-6. Click **Export .glb**. This unwraps the UVs, bakes the maps, writes the file, then re-imports it and runs the checks listed below. The results appear in the log.
+6. Click **Export .glb**. This unwraps the UVs (padded for the texture size you will paint at, *UV padding for*), writes the file, then re-imports it and runs the checks listed below. The results appear in the log.
 
 Camera: left-drag on empty space or right-drag to orbit, Shift + drag to pan, mouse wheel or trackpad (pinch or scroll) to zoom. **Frame model** re-centres the view.
 
@@ -59,7 +60,7 @@ $G --headless --path . -- --in model.glb --out model_rigged.glb \
    [--no-fit] [--no-pin] [--dump-quads layout.obj] [--seed 1] \
    [--voxel 256] [--close 1] [--tex 1024] [--relax 4] [--falloff 3] \
    [--rig humanoid|single|blob_biped|preset.json] [--save-rig out.json] \
-   [--rotate-y 180] [--no-normal] [--no-joint-aware] [--probe-weights] [--unwrap auto|xatlas|charts]
+   [--rotate-y 180] [--no-joint-aware] [--probe-weights] [--unwrap auto|xatlas|charts]
 $G --headless --path . -- --in model.glb --rig humanoid --deform-report <dir> [--budgets 1000,2000] [--modes quad,quadflow,voxel]
 $G --headless --path . -- --selftest-fields                      # quad remesher + rig editing self-tests
 $G --headless --path . -- --make-test-asset res://test [--dense] # procedural test humanoids (T-pose, open, A-pose, ~3.8M-tri dense)
@@ -112,7 +113,7 @@ With a free Apple ID, the app stops opening after 7 days; run it from Xcode agai
 
 **Debugging on the device.** Debug builds write the Godot log to `logs/godot.log` in the app's folder and read commands from `cmd.txt` there (one per line: `shot NAME` saves a screenshot to `shots/NAME.png`; `ui-smoke IN OUT` runs the smoke test). With `xcrun devicectl device copy to/from … --domain-type appDataContainer --domain-identifier dev.warent.modelmate`, a connected Mac can drive and inspect the running app. Godot also keeps its `shader_cache` and `vulkan` folders there; they are caches and safe to ignore.
 
-**What differs from the desktop.** UV unwrapping uses the built-in chart unwrapper, because Godot's xatlas module isn't in exported apps. On Lil gug at 2k triangles its layout covers 54% of the texture with 42 charts (xatlas: 55%, 30 charts), and the rendered result differs from the xatlas export by 0.3/255 per pixel on average. The log reports the time and memory of each step. Keep the app in front while it works: iPadOS pauses apps in the background.
+**What differs from the desktop.** UV unwrapping uses the built-in chart unwrapper, because Godot's xatlas module isn't in exported apps. On Lil gug at 2k triangles its layout covers 54% of the texture with 42 charts (xatlas: 55%, 30 charts), and a texture baked onto it rendered within 0.3/255 per pixel of the xatlas version (measured before baking was removed). The log reports the time and memory of each step. Keep the app in front while it works: iPadOS pauses apps in the background.
 
 ## Rig presets
 | Preset | For | Bones |
@@ -127,19 +128,19 @@ JSON presets (`rigs/*.json` built in, user presets in Godot's `user://rigs`) sto
 - One character, upright: +Y up, **facing +Z**, character's left on +X. This is the glTF/Godot convention. If a model faces -Z, tick *Model faces -Z* before importing, or pass `--rotate-y 180`. Otherwise left and right get swapped, and the checks **can't detect this**, because they only compare the rig with itself.
 - For the humanoid rig: T-pose or A-pose. The arm angle is detected from the bounding box.
 - Use `--rig blob_biped` for round creatures and `--rig single` for props, or build your own skeleton in the UI and save it as a preset.
-- Vertex colours are baked as the glTF spec says (they multiply the base colour), even where Godot's own importer turns them off.
+- Only geometry is read. If the file has no normals (Nomad exports positions only), they are computed.
 
 ## How it works
 
 | Stage | Method (`src/Core`) |
 |---|---|
 | Inside test | `VoxelGrid`: a narrow-band distance field. A point counts as inside if either test says so: a flood fill that first seals gaps (dilate, fill, erode), or a ray-crossing vote along X, Y and Z. This handles holes, overlapping parts and inverted normals. |
-| Base mesh | `SurfaceNets`, then `MeshCleanup` (splits non-manifold edges and vertices), then `Relax` (smoothing along the surface plus guarded snapping to the source). This closed, evenly dense surface feeds both remesh modes and the normal-map bake. |
+| Base mesh | `SurfaceNets`, then `MeshCleanup` (splits non-manifold edges and vertices), then `Relax` (smoothing along the surface plus guarded snapping to the source). This closed, evenly dense surface feeds both remesh modes and the weights. |
 | Quad remesh (default) | `Quad/`: Instant Meshes port. A multiresolution hierarchy, a 4-RoSy orientation field and a 4-PoSy position field solved coarse to fine, then graph and face extraction, triangulation along each quad's shorter diagonal, hole filling and quad-preserving reprojection. If the result isn't closed and manifold or is under 70% quads, it falls back to voxel mode and the export checks fail, so a fallback is never silent. |
 | Voxel remesh | The base mesh decimated by `QemDecimator`: quadric-error edge collapse with manifold and flip guards, up to 6× more detail kept near joints, and an edge-length cap. |
 | Skeleton | `RigPreset` fits a preset to the bounding box (`HumanoidTemplate` for the humanoid), then centers joints inside the mesh by casting rays through it. `RigEdit` does the structural edits and keeps the skeleton valid (one root, parents before children, unique names, no cycles). Each bone's +Y points at its child. |
 | Weights | `VoxelGeodesicWeights`: distance from each bone is measured *through the mesh interior* (Dijkstra over voxels), minus the bone's local thickness. Weight = 1/d^falloff. They're solved once on the dense base surface, smoothed over a world-space radius (2% of model height), mirror-averaged when the model and rig are both symmetric (`Symmetry`), cut to the top 4 bones and normalized, then transferred to the output mesh by closest point. So weights don't change with the triangle budget or the remesh, and they're identical across UV seams. |
-| UVs and bake | `UvUnwrap` (xatlas via `ArrayMesh.LightmapUnwrap`) and `TextureBaker`. Colour: a ray along the normal onto opaque, outward-facing source triangles, so transparent overlay shells and the backs of overlapping internal shells are ignored. Normals: from the clean base mesh, which avoids artifacts where source shells overlap. Detail finer than one base-mesh voxel isn't captured. Normal maps are tangent-space and OpenGL-style, using MikkTSpace tangents that are exported with the mesh. |
+| UVs | `UvUnwrap`: xatlas via `ArrayMesh.LightmapUnwrap` in editor builds, otherwise the built-in `ChartUnwrap`. Charts are padded for the chosen texture size so a painter's bleeding doesn't cross islands. |
 | Export | `RigBuilder` and `Exporter` (`GltfDocument`), then `Verify.RoundTrip`. |
 
 ## Deformation report: quad vs voxel
@@ -192,7 +193,7 @@ In quad mode:
 Also reported as `[METRIC]` lines, without failing the run: the share of valence-4 vertices, the worst surface deviation, and (humanoid rig) the number of sides around each limb.
 
 After re-import, for any rig:
-- the material has its albedo and normal textures;
+- the mesh has UVs;
 - the rest pose reproduces the mesh;
 - each bone's +Y points at its child, and `Left*` bones sit on +X of their `Right*` partners;
 - rotating any one bone moves part of the mesh and nothing outside the region weighted to it and its children;
@@ -207,5 +208,5 @@ Humanoid rigs additionally:
 - Features thinner than about one quad, or about two voxels in voxel mode (fingers, ears, horn tips), can merge or disappear.
 - Parts that are just single-sided surfaces with nothing inside (capes, hair cards) end up as thin closed shells.
 - Weights are automatic only; there's no weight painting. The humanoid template has no finger, eye or jaw bones.
-- Only albedo and normal maps are baked. Roughness and metallic maps are not.
-- `LightmapUnwrap` needs an editor (tools) build, so run ModelMate through the Godot editor binary. Don't export it as a standalone app.
+- No texture baking: colour and surface detail from the source are not transferred. Paint the export in a PBR painter.
+- Exported apps (such as the iPad build) unwrap with the built-in chart unwrapper, which makes somewhat more seams than xatlas.

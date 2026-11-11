@@ -4,7 +4,10 @@ using Godot;
 
 namespace ModelMate.Core;
 
-/// <summary>Loads a glTF/glb and merges all mesh surfaces into one world-space SourceMesh. Main thread only.</summary>
+/// <summary>
+/// Loads a glTF/glb and merges all mesh surfaces into one world-space SourceMesh: geometry only (materials,
+/// textures, vertex colours, lights and cameras in the file are ignored). Main thread only.
+/// </summary>
 public static class Importer
 {
     public static SourceMesh Load(string path) => Load(path, false, out _);
@@ -27,13 +30,8 @@ public static class Importer
     {
         var pos = new List<Vector3>();
         var nrm = new List<Vector3>();
-        var uv = new List<Vector2>();
-        var col = new List<Color>();
-        bool anyCol = false;
         var tris = new List<int>();
-        var triMat = new List<int>();
-        var src = new SourceMesh();
-        var matCache = new Dictionary<Material, int>();
+        bool missingNormals = false;
 
         void Walk(Node n, Transform3D parentXf)
         {
@@ -50,21 +48,14 @@ public static class Importer
                     var v = arr[(int)Mesh.ArrayType.Vertex].AsVector3Array();
                     if (v == null || v.Length == 0) continue;
                     var nArr = arr[(int)Mesh.ArrayType.Normal].VariantType == Variant.Type.Nil ? null : arr[(int)Mesh.ArrayType.Normal].AsVector3Array();
-                    var uvArr = arr[(int)Mesh.ArrayType.TexUV].VariantType == Variant.Type.Nil ? null : arr[(int)Mesh.ArrayType.TexUV].AsVector2Array();
-                    var cArr = arr[(int)Mesh.ArrayType.Color].VariantType == Variant.Type.Nil ? null : arr[(int)Mesh.ArrayType.Color].AsColorArray();
+                    if (nArr == null || nArr.Length < v.Length) missingNormals = true;
                     var idx = arr[(int)Mesh.ArrayType.Index].VariantType == Variant.Type.Nil ? null : arr[(int)Mesh.ArrayType.Index].AsInt32Array();
-
-                    var mat = mi.GetActiveMaterial(s);
-                    int matIdx = MaterialIndex(src, matCache, mat);
 
                     int baseV = pos.Count;
                     for (int i = 0; i < v.Length; i++)
                     {
                         pos.Add(xf * v[i]);
                         nrm.Add(nArr != null && i < nArr.Length ? (nb * nArr[i]).Normalized() : Vector3.Up);
-                        uv.Add(uvArr != null && i < uvArr.Length ? uvArr[i] : Vector2.Zero);
-                        if (cArr != null && i < cArr.Length) { col.Add(cArr[i]); anyCol = true; }
-                        else col.Add(Colors.White);
                     }
                     int triCount = idx != null ? idx.Length / 3 : v.Length / 3;
                     bool flip = xf.Basis.Determinant() < 0;
@@ -76,7 +67,6 @@ public static class Importer
                         // Godot stores clockwise front faces; convert to counter-clockwise (normal = (b-a)x(c-a)).
                         if (!flip) (b, c) = (c, b);
                         tris.Add(baseV + a); tris.Add(baseV + b); tris.Add(baseV + c);
-                        triMat.Add(matIdx);
                     }
                 }
             }
@@ -85,50 +75,8 @@ public static class Importer
 
         Walk(root, Transform3D.Identity);
         if (tris.Count == 0) throw new Exception("No triangle meshes found in file");
-
-        var md = new MeshData(pos.ToArray(), tris.ToArray()) { Nrm = nrm.ToArray(), Uv = uv.ToArray() };
-        src.Mesh = md;
-        src.TriMat = triMat.ToArray();
-        if (anyCol) src.Col = col.ToArray();
-        if (src.Materials.Count == 0) src.Materials.Add(new SourceMaterial());
-        return src;
+        var md = new MeshData(pos.ToArray(), tris.ToArray()) { Nrm = nrm.ToArray() };
+        if (missingNormals) md.ComputeNormals();   // e.g. Nomad exports positions only
+        return new SourceMesh { Mesh = md };
     }
-
-    static int MaterialIndex(SourceMesh src, Dictionary<Material, int> cache, Material mat)
-    {
-        if (mat == null)
-        {
-            if (!cache.TryGetValue(FallbackKey, out int fi))
-            {
-                fi = src.Materials.Count;
-                src.Materials.Add(new SourceMaterial());
-                cache[FallbackKey] = fi;
-            }
-            return fi;
-        }
-        if (cache.TryGetValue(mat, out int i)) return i;
-        var sm = new SourceMaterial();
-        if (mat is BaseMaterial3D bm)
-        {
-            sm.Albedo = bm.AlbedoColor;
-            sm.Transparent = bm.Transparency != BaseMaterial3D.TransparencyEnum.Disabled || bm.AlbedoColor.A < 0.99f;
-            if (bm.AlbedoTexture != null)
-            {
-                var img = bm.AlbedoTexture.GetImage();
-                if (img != null)
-                {
-                    img = (Image)img.Duplicate();
-                    if (img.IsCompressed()) img.Decompress();
-                    img.Convert(Image.Format.Rgba8);
-                    sm.Tex = new SourceTexture { Rgba = img.GetData(), W = img.GetWidth(), H = img.GetHeight() };
-                }
-            }
-        }
-        i = src.Materials.Count;
-        src.Materials.Add(sm);
-        cache[mat] = i;
-        return i;
-    }
-
-    static readonly Material FallbackKey = new StandardMaterial3D();
 }

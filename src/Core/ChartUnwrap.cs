@@ -117,7 +117,10 @@ public static class ChartUnwrap
             foreach (int u in set) allowed[u] = false;
             foreach (var (cu, cn) in grown)
             {
-                if (cu.Count == 1 || Valid(m, units, cu, cn, fn, fa, 2 * sEst)) charts.Add((cu, cn));
+                if (Valid(m, units, cu, cn, fn, fa, 2 * sEst)) charts.Add((cu, cn));
+                else if (cu.Count == 1)
+                    // a strongly folded quad: one triangle flips when projected on the pair's average normal
+                    foreach (int tt in units[cu[0]]) charts.Add((new List<int> { -1 - tt }, fn[tt]));
                 else { info.Regrown++; work.Push((cu, level + 1)); }
             }
         }
@@ -453,8 +456,16 @@ public static class ChartUnwrap
             chartSign[chartId[t]] = (chartSign.TryGetValue(chartId[t], out var s0) ? s0 : 0) + uvA[t];
         }
         int flipped = 0;
+        string flipInfo = "";
+        var chartTris = new Dictionary<int, int>();
+        for (int t = 0; t < nt; t++) chartTris[chartId[t]] = (chartTris.TryGetValue(chartId[t], out var ct) ? ct : 0) + 1;
         for (int t = 0; t < nt; t++)
-            if (MathF.Abs(uvA[t]) > 1e-6f && Math.Sign(uvA[t]) != Math.Sign(chartSign[chartId[t]])) flipped++;
+            // slivers under 0.01 texel² cover no texel; their sign is float rounding noise
+            if (MathF.Abs(uvA[t]) > 0.01f && Math.Sign(uvA[t]) != Math.Sign(chartSign[chartId[t]]))
+            {
+                if (flipped++ == 0)
+                    flipInfo = $"; first: tri {t}, UV area {uvA[t]:G3} texels², 3D area {0.5f * split.TriNormal(t).Length():G3}, island of {chartTris[chartId[t]]} tris";
+            }
 
         // rasterize chart ids at texture resolution
         var owner = new int[texSize * texSize];
@@ -515,7 +526,7 @@ public static class ChartUnwrap
         st.Sort();
         float p95 = st.Count > 0 ? st[(int)(0.95f * (st.Count - 1))] : 1;
 
-        cl.Check(flipped == 0, $"{label}: no UV triangles flipped against their chart ({flipped})");
+        cl.Check(flipped == 0, $"{label}: no UV triangles flipped against their chart ({flipped}{flipInfo})");
         if (strict)
         {
             cl.Check(overlap == 0, $"{label}: no texel claimed by two triangles at {texSize}² ({overlap})");

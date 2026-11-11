@@ -35,16 +35,15 @@ public sealed class PipelineSettings
     public float Falloff = 3f;      // weight = 1/d^falloff
     public float SmoothRadius = 0.02f;  // weight smoothing radius, fraction of model height (world-space, budget-independent)
     public bool SymmetricWeights = true; // mirror-average weights when the model and rig are both symmetric
-    public int TexSize = 1024;
+    public int TexSize = 1024;      // texture resolution the UV layout is padded for (what you will paint at)
     public string Rig = "humanoid"; // preset name (humanoid, single, blob_biped, …) or a path to a preset .json
     public float MaxEdgeFrac = 0.04f; // decimation max edge length, fraction of bbox diagonal
     public bool JointAware = true;    // keep more triangles near joints when decimating
-    public bool NormalMap = true;     // bake a tangent-space normal map from the source
     public float RotateY = 0;         // degrees applied to the source on import (e.g. 180 for models facing -Z)
 }
 
 /// <summary>
-/// Stateful pipeline: import → retopo → skeleton → weights (welded) → unwrap → transfer → bake → build.
+/// Stateful pipeline: import → retopo → skeleton → weights (welded) → unwrap → transfer → build.
 /// Steps marked [main] touch Godot objects and must run on the main thread; others are thread-safe.
 /// </summary>
 public sealed class Pipeline
@@ -70,8 +69,6 @@ public sealed class Pipeline
     public int[] SplitOrigin;
     public int[] SplitBones;
     public float[] SplitWeights;
-    public byte[] AlbedoRgba;
-    public byte[] NormalRgba;
     public CleanupReport Cleanup;
     public MeshData BaseMesh;         // quad mode: dense voxel base mesh the fields were solved on
     public QuadResult Quad;           // quad mode result (null in voxel mode)
@@ -113,7 +110,7 @@ public sealed class Pipeline
         }
         SourceBvh = Timed("source BVH", () => new Bvh(Source.Mesh.Pos, Source.Mesh.Tris));
         var b = Source.Mesh.Bounds();
-        L($"Source: {Source.Mesh.VertexCount} verts, {Source.Mesh.TriCount} tris, {Source.Materials.Count} materials, size {b.Size}");
+        L($"Source: {Source.Mesh.VertexCount} verts, {Source.Mesh.TriCount} tris, size {b.Size}");
     }
 
     /// <summary>Voxel remesh of the source: voxelize → surface nets → cleanup → relax/reproject (no decimation).</summary>
@@ -386,21 +383,11 @@ public sealed class Pipeline
             Array.Copy(WeldedWeights, o * 4, SplitWeights, v * 4, 4);
         }
         L($"Unwrap: {Welded.VertexCount} welded -> {n} split verts");
-        if (S.NormalMap) Split.Tan = UvUnwrap.GenerateTangents(Split);
-    }
-
-    public void Bake()
-    {
-        var bvhBase = BaseMesh != null ? new Bvh(BaseMesh.Pos, BaseMesh.Tris) : null;
-        (AlbedoRgba, NormalRgba) = Timed("bake maps", () =>
-            TextureBaker.Bake(Split, Source, SourceBvh, S.TexSize, 2f * Grid.H, BaseMesh, bvhBase));
     }
 
     /// <summary>[main]</summary>
     public Node3D BuildScene(string name)
     {
-        var img = AlbedoRgba != null ? Image.CreateFromData(S.TexSize, S.TexSize, false, Image.Format.Rgba8, AlbedoRgba) : null;
-        var nimg = NormalRgba != null ? Image.CreateFromData(S.TexSize, S.TexSize, false, Image.Format.Rgba8, NormalRgba) : null;
-        return RigBuilder.Build(name, Split, SplitBones, SplitWeights, Rig, img, nimg);
+        return RigBuilder.Build(name, Split, SplitBones, SplitWeights, Rig);
     }
 }

@@ -48,7 +48,6 @@ public static class Cli
             if (a.TryGetValue("relax", out v)) p.S.RelaxIters = int.Parse(v);
             if (a.TryGetValue("falloff", out v)) p.S.Falloff = float.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
             if (a.TryGetValue("rig", out v)) p.S.Rig = v;
-            if (a.ContainsKey("no-normal")) p.S.NormalMap = false;
             if (a.TryGetValue("retopo", out v)) p.S.Mode = v == "voxel" ? RetopoMode.Voxel : RetopoMode.Quad;
             if (a.TryGetValue("quads", out v)) p.S.TargetTris = 2 * int.Parse(v);   // alias: quads = triangles / 2
             if (a.TryGetValue("detail", out v)) p.S.DetailRes = int.Parse(v);
@@ -87,12 +86,10 @@ public static class Cli
             p.ComputeWeights();
             if (a.ContainsKey("probe-weights")) ProbeWeights(p);
             p.Unwrap();
-            p.Bake();
 
             var cl = new CheckList();
             Verify.PreExport(cl, p.Welded, p.Split, p.SplitOrigin, p.SplitBones, p.SplitWeights, p.AppliedTriBudget);
             ChartUnwrap.CheckLayout(cl, $"UV layout ({UvUnwrap.LastUsed})", p.Split, p.S.TexSize, UvUnwrap.LastUsed == "charts");
-            Verify.BakedTexture(cl, p.AlbedoRgba);
             Verify.QuadMesh(cl, p);
             Verify.LimbSides(cl, p);
 
@@ -102,7 +99,7 @@ public static class Cli
             root.Free();
             GD.Print($"Exported {output} ({p.Split.TriCount} tris, {p.Rig.Bones.Count} bones) in {total.ElapsedMilliseconds} ms");
 
-            Verify.RoundTrip(cl, output, Verify.IsHumanoid(p.Rig), p.S.NormalMap);
+            Verify.RoundTrip(cl, output, Verify.IsHumanoid(p.Rig));
             GD.Print("Verification:");
             cl.Print(s => GD.Print(s));
             return cl.AllOk ? 0 : 1;
