@@ -117,6 +117,12 @@ public partial class Main : Node3D
         foreach (var d in new[] { "user://Models", "user://Exports", "user://rigs" })
             DirAccess.MakeDirRecursiveAbsolute(ProjectSettings.GlobalizePath(d));
         Log($"Files folder: {OS.GetUserDataDir()}");
+        if (_mobile)
+        {
+            IosBridge.Register();   // normally already done when the assembly loaded
+            if (IosBridge.RegisterError != null) Log("Receiving shared files is unavailable: " + IosBridge.RegisterError);
+            IosBridge.SweepInbox();
+        }
     }
 
     /// <summary>Touch-sized controls (44 pt) everywhere under the panel.</summary>
@@ -429,7 +435,7 @@ public partial class Main : Node3D
         Header(vb, "6 · Export");
         _texSize = Option(vb, "Texture size", new[] { "512", "1024", "2048", "4096" });
         _texSize.Select(1);
-        _btnExport = Btn(vb, "Export .glb…", OnExportPressed);
+        _btnExport = Btn(vb, _touchUi ? "Export & share…" : "Export .glb…", OnExportPressed);
 
         vb.AddChild(new HSeparator());
         vb.AddChild(_status);
@@ -535,9 +541,23 @@ public partial class Main : Node3D
 
     void Log(string s) => _logQ.Enqueue(s);
 
+    public override void _Notification(int what)
+    {
+        // returning from another app (e.g. after "Copy to ModelMate"): pick up files iOS left in Documents/Inbox
+        if (what == NotificationApplicationResumed || what == NotificationApplicationFocusIn) IosBridge.SweepInbox();
+    }
+
     public override void _Process(double delta)
     {
         if (_log == null) return;
+        while (IosBridge.Messages.TryDequeue(out var m)) Log(m);
+        if (!_busy && IosBridge.Received.TryDequeue(out var received))
+        {
+            // several at once: keep the newest, the others are already saved in Models/
+            while (IosBridge.Received.TryDequeue(out var newer)) received = newer;
+            Log($"Received {System.IO.Path.GetFileName(received)} from another app (saved in Models/)");
+            _ = Import(received);
+        }
         while (_logQ.TryDequeue(out var s))
         {
             _log.AddText(s + "\n");
@@ -559,7 +579,7 @@ public partial class Main : Node3D
     /// <summary>
     /// Debug builds on a device: commands dropped into user://cmd.txt (one per line) let a connected Mac inspect the
     /// running app. "shot NAME" saves user://shots/NAME.png; "log" flushes the log file; "ui-smoke IN OUT" runs the
-    /// UI smoke test; "quit" exits. The file is deleted once read.
+    /// UI smoke test; "share PATH" opens the share sheet for a file; "quit" exits. The file is deleted once read.
     /// </summary>
     async Task PollDebugCommands()
     {
@@ -580,6 +600,13 @@ public partial class Main : Node3D
                         DirAccess.MakeDirRecursiveAbsolute(ProjectSettings.GlobalizePath("user://shots"));
                         await Shot(ProjectSettings.GlobalizePath($"user://shots/{(a.Length > 1 ? a[1] : "shot")}.png"));
                         break;
+                    case "share" when a.Length >= 2:
+                    {
+                        var r = _btnExport.GetGlobalRect();
+                        bool shown = IosBridge.Share(ProjectSettings.GlobalizePath(a[1]), r.Position.X, r.Position.Y, r.Size.X, r.Size.Y);
+                        GD.Print($"[cmd] share sheet {(shown ? "presented" : "NOT presented")}");
+                        break;
+                    }
                     case "ui-smoke" when a.Length >= 3:
                         await UiSmoke(a[1], a[2]);
                         break;
@@ -926,6 +953,12 @@ public partial class Main : Node3D
             var dest = System.IO.Path.Combine(ProjectSettings.GlobalizePath("user://Exports"), name);
             await ExportTo(dest);
             Log($"Saved to Files › On My iPad › ModelMate › Exports › {name}");
+            // then offer it to other apps (AirDrop, Files, Nomad, …) through the system share sheet
+            if (_mobile && System.IO.File.Exists(dest))
+            {
+                var r = _btnExport.GetGlobalRect();   // logical pixels = points (UI scale = screen scale)
+                if (!IosBridge.Share(dest, r.Position.X, r.Position.Y, r.Size.X, r.Size.Y)) Log("Sharing is not available here.");
+            }
             return;
         }
         var fd = new FileDialog

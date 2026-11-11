@@ -93,7 +93,11 @@ The UI scales for touch:
 | two fingers | pinch to zoom, drag to pan |
 | **Frame model** button | re-centre the camera |
 
-**Files.** The app's folder appears in the Files app under **On My iPad › ModelMate**. Put `.glb`/`.gltf` models in `Models/`; **Import** opens that folder. **Export** writes straight to `Exports/<model>_rigged.glb`, and saved rig presets go to `rigs/`. AirDrop or copy the export from Files to use it in your game project.
+**Getting models in.** Share a `.glb` from another app (for example Nomad Sculpt's export) and pick **ModelMate** in the share sheet: the model is copied into `Models/` and imported. You can also put `.glb`/`.gltf` files in the app's folder in the Files app (**On My iPad › ModelMate › Models**); **Import** opens that folder.
+
+**Sending models out.** **Export & share…** writes `Exports/<model>_rigged.glb` and then opens the share sheet, so you can send it to AirDrop, Files, iCloud Drive or any app that accepts glTF. The file stays in `Exports/` either way. Saved rig presets go to `rigs/`.
+
+ModelMate declares the glTF types (`org.khronos.gltf.binary` for `.glb`, `org.khronos.gltf` for `.gltf`) so iOS offers it for those files. Both directions go through the Objective-C runtime from C# (`src/App/IosBridge.cs`), so there is no native plugin to build: a small class registered with Godot's application delegate receives shared files, and the share sheet is a `UIActivityViewController`.
 
 **Building and installing** (needs a Mac with Xcode, the Godot 4.7.2 .NET export templates, and a free or paid Apple ID):
 
