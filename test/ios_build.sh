@@ -12,6 +12,15 @@ SIM=${SIM:-"iPad Pro 13-inch (M5)"}
 BUNDLE=dev.warent.modelmate
 set -e
 mkdir -p build/ios && touch build/.gdignore   # keep Godot from importing build output
+# native plugin (catches files shared at launch): device arm64 + simulator x86_64 in one static library
+P=ios/plugins/MMLaunchURL
+if [[ ! -f $P/MMLaunchURL.a || $P/MMLaunchURL.mm -nt $P/MMLaunchURL.a ]]; then
+  xcrun -sdk iphoneos clang -arch arm64 -miphoneos-version-min=14.0 -fobjc-arc -x objective-c++ -c $P/MMLaunchURL.mm -o build/ios/mm_dev.o
+  xcrun -sdk iphonesimulator clang -arch x86_64 -mios-simulator-version-min=14.0 -fobjc-arc -x objective-c++ -c $P/MMLaunchURL.mm -o build/ios/mm_sim.o
+  libtool -static -o build/ios/mm_dev.a build/ios/mm_dev.o 2>/dev/null
+  libtool -static -o build/ios/mm_sim.a build/ios/mm_sim.o 2>/dev/null
+  lipo -create build/ios/mm_dev.a build/ios/mm_sim.a -output $P/MMLaunchURL.a
+fi
 # Godot refuses to export without a team ID. Use $TEAM_ID if given, otherwise a placeholder: simulator builds are
 # unsigned, and for a device you pick your Personal Team in Xcode (Signing & Capabilities), which replaces it.
 cp export_presets.cfg build/ios/export_presets.cfg.bak

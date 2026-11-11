@@ -1,0 +1,16 @@
+; Built from MMLaunchURL.mm by test/ios_build.sh
+[config]
+name="MMLaunchURL"
+binary="MMLaunchURL.a"
+initialization="mm_launch_url_init"
+deinitialization="mm_launch_url_deinit"
+
+[dependencies]
+linked=[]
+embedded=[]
+system=[]
+capabilities=[]
+files=[]
+linker_flags=[]
+
+[plist]

@@ -8,3 +8,4 @@ test/*.png
 test/*.obj
 test/report/
 build/
+ios/plugins/*/*.a

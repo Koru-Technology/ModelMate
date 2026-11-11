@@ -12,9 +12,10 @@ namespace ModelMate.App;
 /// <item>Receiving: a tiny Objective-C class, created at startup, is registered as a service with Godot's
 /// application delegate (<c>+[GDTApplicationDelegate addService:]</c>), which forwards app and scene callbacks to its
 /// services. When another app shares a .glb/.gltf to ModelMate ("Open in"/"Copy to ModelMate"), iOS calls
-/// <c>scene:openURLContexts:</c> (app running) or <c>scene:willConnectToSession:options:</c> (app launched by the
-/// share); the file is copied into Documents/Models and queued for import. Files iOS drops in Documents/Inbox are
-/// swept up too (<see cref="SweepInbox"/>).</item>
+/// <c>scene:openURLContexts:</c> while the app runs; the file is copied into Documents/Models and queued for import.
+/// When the share launches the app, iOS delivers the file before this assembly loads, so the native plugin in
+/// <c>ios/plugins/MMLaunchURL</c> copies it into tmp/Received, which <see cref="SweepInbox"/> imports at startup
+/// (as it does files iOS itself drops there).</item>
 /// <item>Sending: <see cref="Share"/> presents the system share sheet (UIActivityViewController) for a file.</item>
 /// </list>
 /// The document types that make iOS offer ModelMate for glTF files are declared in the export preset's Info.plist
@@ -62,10 +63,7 @@ public static unsafe class IosBridge
     static bool _registered;
     public static string RegisterError { get; private set; }
 
-    /// <summary>
-    /// Runs when the assembly loads (during Godot's startup, before the window scene connects), so a launch
-    /// caused by a share is not missed.
-    /// </summary>
+    /// <summary>Runs when the assembly loads (Godot's second setup phase, after the window scene has connected).</summary>
 #pragma warning disable CA2255
     [ModuleInitializer]
 #pragma warning restore CA2255
@@ -88,8 +86,6 @@ public static unsafe class IosBridge
                 if (objc_getProtocol(proto) is var pr && pr != IntPtr.Zero) class_addProtocol(cls, pr);
             class_addMethod(cls, Sel("scene:openURLContexts:"),
                 (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, IntPtr, IntPtr, void>)&SceneOpenUrlContexts, "v@:@@");
-            class_addMethod(cls, Sel("scene:willConnectToSession:options:"),
-                (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, IntPtr, IntPtr, IntPtr, void>)&SceneWillConnect, "v@:@@@");
             class_addMethod(cls, Sel("application:openURL:options:"),
                 (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, IntPtr, IntPtr, IntPtr, byte>)&AppOpenUrl, "c@:@@@");
             objc_registerClassPair(cls);
@@ -102,13 +98,6 @@ public static unsafe class IosBridge
 
     [UnmanagedCallersOnly]
     static void SceneOpenUrlContexts(IntPtr self, IntPtr cmd, IntPtr scene, IntPtr contexts) => TakeContexts(contexts, "open");
-
-    [UnmanagedCallersOnly]
-    static void SceneWillConnect(IntPtr self, IntPtr cmd, IntPtr scene, IntPtr session, IntPtr options)
-    {
-        try { if (options != IntPtr.Zero) TakeContexts(Msg(options, Sel("URLContexts")), "launch"); }
-        catch (Exception e) { Messages.Enqueue("iOS: launch URL error: " + e.Message); }
-    }
 
     [UnmanagedCallersOnly]
     static byte AppOpenUrl(IntPtr self, IntPtr cmd, IntPtr app, IntPtr url, IntPtr options)
@@ -164,22 +153,27 @@ public static unsafe class IosBridge
         return dest;
     }
 
-    /// <summary>Moves models iOS left in Documents/Inbox into Models/ and queues them.</summary>
+    /// <summary>
+    /// Moves models iOS left in Documents/Inbox, and those the native plugin received at launch (tmp/Received), into
+    /// Models/ and queues them.
+    /// </summary>
     public static void SweepInbox()
     {
         if (!OperatingSystem.IsIOS()) return;
-        try
-        {
-            var inbox = Path.Combine(Documents, "Inbox");
-            if (!Directory.Exists(inbox)) return;
-            foreach (var f in Directory.GetFiles(inbox))
+        var home = System.Environment.GetEnvironmentVariable("HOME") ?? "";
+        foreach (var inbox in new[] { Path.Combine(Documents, "Inbox"), Path.Combine(home, "tmp", "Received") })
+            try
             {
-                Messages.Enqueue($"iOS: found {Path.GetFileName(f)} in Inbox");
-                var dest = Import(f, move: true);
-                if (dest != null) Received.Enqueue(dest);
+                if (!Directory.Exists(inbox)) continue;
+                foreach (var f in Directory.GetFiles(inbox))
+                {
+                    Messages.Enqueue($"iOS: found {Path.GetFileName(f)} in {Path.GetFileName(inbox)}");
+                    var dest = Import(f, move: true);
+                    if (dest != null) Received.Enqueue(dest);
+                    else File.Delete(f);
+                }
             }
-        }
-        catch (Exception e) { Messages.Enqueue("iOS: Inbox error: " + e.Message); }
+            catch (Exception e) { Messages.Enqueue($"iOS: {Path.GetFileName(inbox)} error: " + e.Message); }
     }
 
     /// <summary>
