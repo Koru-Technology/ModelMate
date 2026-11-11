@@ -31,15 +31,7 @@ public static class Render
         var skel = scene.FindChildren("*", "Skeleton3D", true, false).OfType<Skeleton3D>().FirstOrDefault();
         if (pose && skel != null) ApplyTestPose(skel);
         if (posePreset != null && skel != null)
-        {
-            var rots = ModelMate.Core.RigPreset.PoseRotations(ModelMate.Core.RigPreset.Load(ProjectSettings.GlobalizePath(posePreset)), poseName);
-            foreach (var (bone, rot) in rots)
-            {
-                int i = skel.FindBone(bone);
-                if (i < 0) { GD.PrintErr($"pose: no bone {bone}"); continue; }
-                skel.SetBonePoseRotation(i, (skel.GetBoneRest(i).Basis * rot).GetRotationQuaternion());
-            }
-        }
+            ApplyPresetPose(skel, ModelMate.Core.RigPreset.Load(ProjectSettings.GlobalizePath(posePreset)), poseName);
 
         var aabb = new Aabb();
         bool first = true;
@@ -129,6 +121,17 @@ public static class Render
     }
 
     /// <summary>Arms down/forward, one knee bent, head turned: exercises shoulders, elbows, hips, knees.</summary>
+    /// <summary>Applies a named pose stored in a rig preset (rotations are relative to each bone's rest).</summary>
+    public static void ApplyPresetPose(Skeleton3D skel, ModelMate.Core.RigPreset.PresetDto preset, string poseName)
+    {
+        foreach (var (bone, rot) in ModelMate.Core.RigPreset.PoseRotations(preset, poseName))
+        {
+            int i = skel.FindBone(bone);
+            if (i < 0) { GD.PrintErr($"pose: no bone {bone}"); continue; }
+            skel.SetBonePoseRotation(i, (skel.GetBoneRest(i).Basis * rot).GetRotationQuaternion());
+        }
+    }
+
     public static void ApplyTestPose(Skeleton3D s)
     {
         void Rot(string bone, Vector3 axis, float deg)

@@ -5,5 +5,8 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Nullable>disable</Nullable>
     <RootNamespace>ModelMate</RootNamespace>
+    <!-- Godot defaults Debug/ExportDebug to unoptimized code; the geometry pipeline is 2-10x slower that way
+         (especially under NativeAOT on iOS), and nothing here relies on stepping through code in a debugger. -->
+    <Optimize>true</Optimize>
   </PropertyGroup>
 </Project>

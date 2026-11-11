@@ -73,7 +73,14 @@ public partial class Main : Node3D
         BuildWorld();
         BuildUi();
         UpdateButtons();
-        if (si >= 0 && si + 2 < args.Length) { await UiSmoke(args[si + 1], args[si + 2]); return; }
+        if (Array.IndexOf(args, "--run-id") is int ri2 and >= 0 && ri2 + 1 < args.Length) GD.Print($"Run id {args[ri2 + 1]}");
+        if (si >= 0 && si + 2 < args.Length)
+        {
+            string rig = Array.IndexOf(args, "--rig") is int rgi and >= 0 && rgi + 1 < args.Length ? args[rgi + 1] : "humanoid";
+            int tris = Array.IndexOf(args, "--tris") is int tri and >= 0 && tri + 1 < args.Length ? int.Parse(args[tri + 1]) : 8000;
+            await UiSmoke(args[si + 1], args[si + 2], rig, tris);
+            return;
+        }
         if (touchTest) { await TouchTest(); return; }
         Log(_touchUi
             ? "Put .glb files in Files › On My iPad › ModelMate › Models, then tap Import. One finger: orbit · two fingers: pinch to zoom, drag to pan · drag a joint to move it."
@@ -125,42 +132,74 @@ public partial class Main : Node3D
 
     void SampleMemory()
     {
-        try { _peakMem = Math.Max(_peakMem, System.Environment.WorkingSet); } catch { /* not supported */ }
+        try { _peakMem = Math.Max(_peakMem, MemoryProbe.FootprintBytes()); } catch { /* not supported */ }
     }
 
     string MemoryText()
     {
-        try { return $"memory {System.Environment.WorkingSet / 1048576} MB, peak {_peakMem / 1048576} MB"; }
+        try
+        {
+            long avail = MemoryProbe.AvailableBytes();
+            return $"memory {MemoryProbe.FootprintBytes() / 1048576} MB, peak {_peakMem / 1048576} MB" +
+                   (avail >= 0 ? $", {avail / 1048576} MB more allowed by iOS" : "");
+        }
         catch { return "memory n/a"; }
     }
 
+    int _testPoseIdx;
+
+    /// <summary>
+    /// Shows a test pose: the preset's named poses in turn (e.g. waddle_left, waddle_right for blob rigs), or the
+    /// standard humanoid bend. Returns a log line.
+    /// </summary>
+    string ApplyNextTestPose()
+    {
+        if (_previewSkel == null) return "Compute weights first.";
+        var poses = _p.RigPresetData?.Poses;
+        if (poses != null && poses.Count > 0)
+        {
+            var names = poses.Keys.OrderBy(k => k).ToList();
+            var name = names[_testPoseIdx++ % names.Count];
+            ResetPose();
+            Render.ApplyPresetPose(_previewSkel, _p.RigPresetData, name);
+            return $"Test pose: {name}";
+        }
+        Render.ApplyTestPose(_previewSkel);
+        return "Test pose: humanoid bend";
+    }
+
     /// <summary>Drives the UI steps programmatically (same code paths as the buttons), then screenshots.</summary>
-    async Task UiSmoke(string input, string outDir)
+    async Task UiSmoke(string input, string outDir, string rig = "humanoid", int tris = 8000)
     {
         outDir = ProjectSettings.GlobalizePath(outDir);
+        System.IO.Directory.CreateDirectory(outDir);
         await Import(ProjectSettings.GlobalizePath(input));
-        _tris.Value = 8000;
-        _rigPreset.Select(RigPreset.List().IndexOf("humanoid"));
-        await OnFitPressed();
+        _tris.Value = tris;
+        int ri = RigPreset.List().IndexOf(rig);
+        if (ri >= 0) { _rigPreset.Select(ri); await OnFitPressed(); }
+        else await FitWith(rig);
         await OnRetopoPressed();
         await OnWeightsPressed();
-        _boneList.Select(_p.Rig.Find("LeftUpperArm"));
-        _gizmo.Select(_p.Rig.Find("LeftUpperArm"));
+        // humanoid: upper arm / hand; other rigs: the first Left* bone
+        string heatBone = _p.Rig.Find("LeftUpperArm") >= 0 ? "LeftUpperArm" : _p.Rig.Bones.First(b => b.Name.StartsWith("Left")).Name;
+        string editBone = _p.Rig.Find("LeftHand") >= 0 ? "LeftHand" : heatBone;
+        _boneList.Select(_p.Rig.Find(heatBone));
+        _gizmo.Select(_p.Rig.Find(heatBone));
         _heat.ButtonPressed = true;
         OnBoneSelected(_gizmo.Selected);
         await Shot(System.IO.Path.Combine(outDir, "ui_heat.png"));
         _heat.ButtonPressed = false;
-        Render.ApplyTestPose(_previewSkel);
+        Log(ApplyNextTestPose());
         await Shot(System.IO.Path.Combine(outDir, "ui_pose.png"));
         ResetPose();
         // skeleton editor through the same handlers as the buttons
-        int hand = _p.Rig.Find("LeftHand");
+        int hand = _p.Rig.Find(editBone);
         _boneList.Select(hand); _gizmo.Select(hand); OnBoneSelected(hand);
-        OnAddBone();                                                   // child of LeftHand
+        OnAddBone();                                                   // child of the Left* bone
         _renameEdit.Text = "LeftClaw"; OnRenameBone();
         OnSymmetrize();                                                // creates RightClaw
         bool editsOk = _p.Rig.Find("LeftClaw") >= 0 && _p.Rig.Find("RightClaw") >= 0 &&
-                       _p.Rig.Bones[_p.Rig.Find("RightClaw")].Parent == _p.Rig.Find("RightHand");
+                       _p.Rig.Bones[_p.Rig.Find("RightClaw")].Parent == _p.Rig.Find("Right" + editBone[4..]);
         _presetName.Text = "ui_smoke_rig"; OnSavePreset();
         await FitWith("ui_smoke_rig");                                 // reload the saved preset
         editsOk &= _p.Rig.Find("RightClaw") >= 0;
@@ -306,7 +345,7 @@ public partial class Main : Node3D
         vb.AddThemeConstantOverride("separation", 6);
         margin.AddChild(vb);
 
-        _status = new Label { Text = "Idle" };
+        _status = new Label { Text = "Idle", AutowrapMode = TextServer.AutowrapMode.WordSmart, CustomMinimumSize = new Vector2(300, 0) };
 
         Header(vb, "1 · Import");
         _faceNegZ = Check(vb, "Model faces -Z (rotate 180° on import)", false, _ => { });
@@ -367,7 +406,7 @@ public partial class Main : Node3D
         _close = Spin(vb, "Gap closing (voxels)", 0, 3, 1, 1);
         _relax = Spin(vb, "Relax iterations", 0, 10, 4, 1);
         _btnRetopo = Btn(vb, "Retopologize", () => _ = OnRetopoPressed());
-        _triInfo = new Label();
+        _triInfo = new Label { AutowrapMode = TextServer.AutowrapMode.WordSmart, CustomMinimumSize = new Vector2(300, 0) };
         vb.AddChild(_triInfo);
         _showRetopo = Check(vb, "Show retopo mesh", true, _ => RefreshVisibility());
         _wire = Check(vb, "Wireframe", false, v => GetViewport().DebugDraw = v ? Viewport.DebugDrawEnum.Wireframe : Viewport.DebugDrawEnum.Disabled);
@@ -383,7 +422,8 @@ public partial class Main : Node3D
         _rz = Slider(vb, "Rotate Z", OnPoseSlider);
         var hb = new HBoxContainer();
         vb.AddChild(hb);
-        _btnTestPose = Btn(hb, "Test pose", () => { if (_previewSkel != null) Render.ApplyTestPose(_previewSkel); });
+        _btnTestPose = Btn(hb, "Test pose", () => Log(ApplyNextTestPose()));
+        _btnTestPose.TooltipText = "Humanoid: a standard bend. Rigs from a preset with named poses: cycles through them.";
         _btnResetPose = Btn(hb, "Reset pose", ResetPose);
 
         Header(vb, "6 · Export");
@@ -401,19 +441,29 @@ public partial class Main : Node3D
         _log.AddThemeFontSizeOverride("normal_font_size", 11);
         vb.AddChild(_log);
         UpdateVoxelInfo();
+        void Inset() { _orbit.RightInset = MathF.Min(0.6f, 420f / MathF.Max(1, GetViewport().GetVisibleRect().Size.X)); _orbit.Refresh(); }
+        GetViewport().SizeChanged += Inset;
+        Callable.From(Inset).CallDeferred();
         if (_touchUi)
         {
             EnlargeForTouch(vb);
-            // keep clear of rounded corners / home indicator
+            // keep clear of rounded corners / home indicator. The safe area and window size are both in pixels;
+            // insets that come out negative or implausibly large mean the units disagree, so they are ignored.
             var safe = DisplayServer.GetDisplaySafeArea();
-            var screen = DisplayServer.ScreenGetSize();
+            var win = DisplayServer.WindowGetSize();
             float sc = GetWindow().ContentScaleFactor;
+            Log($"Display: window {win}, safe area {safe}, UI scale {sc}");
             if (_mobile && safe.Size.X > 0)
             {
-                panel.OffsetTop = safe.Position.Y / sc;
-                panel.OffsetBottom = -(screen.Y - safe.End.Y) / sc;
-                panel.OffsetRight = -(screen.X - safe.End.X) / sc;
-                panel.OffsetLeft = panel.OffsetRight - 420;
+                float top = safe.Position.Y, bottom = win.Y - safe.End.Y, right = win.X - safe.End.X;
+                bool plausible = top >= 0 && bottom >= 0 && right >= 0 && top < 0.15f * win.Y && bottom < 0.15f * win.Y && right < 0.15f * win.X;
+                if (plausible)
+                {
+                    panel.OffsetTop = top / sc;
+                    panel.OffsetBottom = -bottom / sc;
+                    panel.OffsetRight = -right / sc;
+                    panel.OffsetLeft = panel.OffsetRight - 420;
+                }
             }
         }
     }
@@ -496,6 +546,51 @@ public partial class Main : Node3D
         if (_gizmo.Cam == null && _orbit.Cam != null) _gizmo.Cam = _orbit.Cam;
         _memSampleT += delta;
         if (_memSampleT > 0.25) { _memSampleT = 0; SampleMemory(); }
+        if (_mobile && OS.IsDebugBuild())
+        {
+            _cmdT += delta;
+            if (_cmdT > 1) { _cmdT = 0; _ = PollDebugCommands(); }
+        }
+    }
+
+    double _cmdT;
+    bool _cmdBusy;
+
+    /// <summary>
+    /// Debug builds on a device: commands dropped into user://cmd.txt (one per line) let a connected Mac inspect the
+    /// running app. "shot NAME" saves user://shots/NAME.png; "log" flushes the log file; "ui-smoke IN OUT" runs the
+    /// UI smoke test; "quit" exits. The file is deleted once read.
+    /// </summary>
+    async Task PollDebugCommands()
+    {
+        const string f = "user://cmd.txt";
+        if (_cmdBusy || !Godot.FileAccess.FileExists(f)) return;
+        _cmdBusy = true;
+        try
+        {
+            var lines = Godot.FileAccess.GetFileAsString(f).Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            DirAccess.RemoveAbsolute(ProjectSettings.GlobalizePath(f));
+            foreach (var line in lines)
+            {
+                var a = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                GD.Print($"[cmd] {line}");
+                switch (a[0])
+                {
+                    case "shot":
+                        DirAccess.MakeDirRecursiveAbsolute(ProjectSettings.GlobalizePath("user://shots"));
+                        await Shot(ProjectSettings.GlobalizePath($"user://shots/{(a.Length > 1 ? a[1] : "shot")}.png"));
+                        break;
+                    case "ui-smoke" when a.Length >= 3:
+                        await UiSmoke(a[1], a[2]);
+                        break;
+                    case "quit":
+                        GetTree().Quit();
+                        break;
+                }
+            }
+        }
+        catch (Exception e) { GD.PrintErr("[cmd] " + e.Message); }
+        finally { _cmdBusy = false; }
     }
 
     void UpdateVoxelInfo()
@@ -855,6 +950,7 @@ public partial class Main : Node3D
 
     async Task ExportTo(string outPath)
     {
+        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(outPath));
         _lastExportOk = null;
         _p.S.TexSize = int.Parse(_texSize.GetItemText(_texSize.Selected));
         await RunBusy("export", async () =>

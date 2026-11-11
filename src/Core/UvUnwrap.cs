@@ -16,7 +16,8 @@ public static class UvUnwrap
     public static string Mode = "auto";
     /// <summary>Which unwrapper produced the last layout: "xatlas" or "charts".</summary>
     public static string LastUsed { get; private set; }
-    static bool _xatlasMissing;
+    // Godot builds xatlas into the editor only; exported apps skip straight to the chart unwrapper
+    static bool _xatlasMissing = !OS.HasFeature("editor");
 
     public static (MeshData split, int[] origin) Unwrap(MeshData welded, int texSize, Action<string> log = null)
     {

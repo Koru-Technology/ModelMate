@@ -21,9 +21,17 @@ window/size/viewport_width=1600
 window/size/viewport_height=900
 window/handheld/orientation=4
 
+[debug]
+
+file_logging/enable_file_logging=true
+
 [dotnet]
 
 project/assembly_name="ModelMate"
+
+[internationalization]
+
+locale/include_text_server_data=true
 
 [rendering]
 

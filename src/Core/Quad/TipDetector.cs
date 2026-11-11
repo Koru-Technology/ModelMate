@@ -17,34 +17,48 @@ public static class TipDetector
         var (start, nbr) = m.BuildAdjacency();
         int n = m.VertexCount;
         var score = new float[n];
-        var hood = new List<int>[n];
-        System.Threading.Tasks.Parallel.For(0, n, v =>
-        {
-            float r = sizing != null ? sizing[v] : rho;
-            var nv = m.Nrm[v]; var pv = m.Pos[v];
-            // breadth-first neighbourhood within Euclidean radius r
-            var seen = new HashSet<int> { v };
-            var q = new Queue<int>(); q.Enqueue(v);
-            var list = new List<int>();
-            float dev = 0; int cnt = 0; bool extreme = true;
-            while (q.Count > 0)
+        var hood = new int[n][];   // neighbourhoods, kept only for tip candidates
+        // Per-thread scratch (visit stamps + BFS queue) instead of per-vertex collections: the old version allocated
+        // a HashSet, Queue and List for each of ~200k vertices, which was GC-bound (4x slower on iOS NativeAOT).
+        System.Threading.Tasks.Parallel.For(0, n,
+            () => (stamp: new int[n], queue: new int[256]),
+            (v, _, s) =>
             {
-                int u = q.Dequeue();
-                for (int k = start[u]; k < start[u + 1]; k++)
+                float r = sizing != null ? sizing[v] : rho;
+                float r2 = r * r;
+                var nv = m.Nrm[v]; var pv = m.Pos[v];
+                int mark = v + 1;
+                s.stamp[v] = mark;
+                var queue = s.queue;
+                int head = 0, tail = 0;
+                queue[tail++] = v;
+                float dev = 0; int cnt = 0; bool extreme = true;
+                while (head < tail)
                 {
-                    int w = nbr[k];
-                    if (!seen.Add(w)) continue;
-                    if ((m.Pos[w] - pv).LengthSquared() > r * r) continue;
-                    q.Enqueue(w); list.Add(w);
-                    if ((m.Pos[w] - pv).Dot(nv) > 1e-6f * r) { extreme = false; }
-                    dev += 1f - Math.Clamp(m.Nrm[w].Dot(nv), -1f, 1f); cnt++;
+                    int u = queue[head++];
+                    for (int k = start[u]; k < start[u + 1]; k++)
+                    {
+                        int w = nbr[k];
+                        if (s.stamp[w] == mark) continue;
+                        s.stamp[w] = mark;
+                        var d = m.Pos[w] - pv;
+                        if (d.LengthSquared() > r2) continue;
+                        if (tail == queue.Length) { Array.Resize(ref queue, queue.Length * 2); s.queue = queue; }
+                        queue[tail++] = w;
+                        if (d.Dot(nv) > 1e-6f * r) extreme = false;
+                        dev += 1f - Math.Clamp(m.Nrm[w].Dot(nv), -1f, 1f); cnt++;
+                    }
                 }
-            }
-            hood[v] = list;
-            if (!extreme || cnt < 6) return;
-            float meanDeg = Mathf.RadToDeg(MathF.Acos(Math.Clamp(1f - dev / cnt, -1f, 1f)));
-            if (meanDeg >= minConeDeg) score[v] = meanDeg;
-        });
+                if (!extreme || cnt < 6) return s;
+                float meanDeg = Mathf.RadToDeg(MathF.Acos(Math.Clamp(1f - dev / cnt, -1f, 1f)));
+                if (meanDeg >= minConeDeg)
+                {
+                    score[v] = meanDeg;
+                    hood[v] = queue[1..tail];   // neighbours (excluding v itself), same order as before
+                }
+                return s;
+            },
+            _ => { });
         var tips = new List<int>();
         for (int v = 0; v < n; v++)
         {

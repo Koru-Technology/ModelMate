@@ -30,11 +30,19 @@ public partial class OrbitCamera : Node3D
         Apply();
     }
 
+    /// <summary>Share of the viewport width covered by UI on the right; the view is shifted to centre the target in the rest.</summary>
+    public float RightInset;
+
     void Apply()
     {
         var b = Basis.FromEuler(new Vector3(_pitch, _yaw, 0));
         Cam.GlobalTransform = new Transform3D(b, Target + b.Z * _dist);
+        var vp = GetViewport()?.GetVisibleRect().Size ?? Vector2.One;
+        float visibleW = 2 * _dist * MathF.Tan(Mathf.DegToRad(Cam.Fov) * 0.5f) * vp.X / MathF.Max(1, vp.Y);
+        Cam.HOffset = 0.5f * RightInset * visibleW;
     }
+
+    public void Refresh() => Apply();
 
     // ---------------------------------------------------------------- input
     //

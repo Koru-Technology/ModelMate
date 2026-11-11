@@ -46,7 +46,7 @@ $G --path .                      # UI
 2. **Skeleton.** Pick a rig preset and click **Fit skeleton**, then left-drag joints to adjust them (left/right edits mirror by default). Edit the skeleton with **Add child**, **Delete**, **Rename**, **Parent**, **Deforms mesh** and **Symmetrize** (copies every `Left*` bone onto its `Right*` partner). **Save** stores it as a preset you can reuse on other models; **Load preset file…** fits a preset `.json` from anywhere.
 3. Pick a mode and a **target triangle count**, then click **Retopologize**. Quad mode is the default. In voxel mode the voxel resolution sets the detail and the result is decimated to the target.
 4. Click **Compute weights**. Tick *Show selected bone's weights* to see a heatmap, choosing the bone in the list or by clicking a joint.
-5. Preview poses with the rotation sliders or **Test pose**. Use **Reset pose** before editing joints again.
+5. Preview poses with the rotation sliders or **Test pose** (humanoid: a standard bend; rigs from a preset with named poses, such as `blob_biped`: each press shows the next pose). Use **Reset pose** before editing joints again.
 6. Click **Export .glb**. This unwraps the UVs, bakes the maps, writes the file, then re-imports it and runs the checks listed below. The results appear in the log.
 
 Camera: left-drag on empty space or right-drag to orbit, Shift + drag to pan, mouse wheel or trackpad (pinch or scroll) to zoom. **Frame model** re-centres the view.
@@ -75,7 +75,16 @@ $G --path . -- --touch-test                                      # synthetic tou
 
 ## Running on an iPad
 
-ModelMate runs on an iPad as an ordinary app (tested target: iPad Pro, M1 or later). The UI scales for touch:
+ModelMate runs on an iPad as an ordinary app. It has been tested on an iPad Pro 12.9" (5th generation, M1), where the whole UI flow (the smoke test below) passes. Measured there:
+
+| model | budget | retopology | weights | export | peak memory |
+|---|---|---|---|---|---|
+| Lil gug (creature, 254k-triangle source) | 2k triangles | 9.1 s | 0.7 s | 1.7 s | 1.0 GB |
+| test humanoid (46k-triangle source) | 8k triangles | 1.5 s | 0.2 s | 1.0 s | 0.7 GB |
+
+iOS lets ModelMate use about 5.1 GB on that iPad; the log reports memory after each step, including how much more iOS allows.
+
+The UI scales for touch:
 
 | gesture | does |
 |---|---|
@@ -88,7 +97,7 @@ ModelMate runs on an iPad as an ordinary app (tested target: iPad Pro, M1 or lat
 
 **Building and installing** (needs a Mac with Xcode, the Godot 4.7.2 .NET export templates, and a free or paid Apple ID):
 
-1. `./test/ios_build.sh` exports the Xcode project to `build/ios/ModelMate.xcodeproj`.
+1. `./test/ios_build.sh` exports the Xcode project to `build/ios/ModelMate.xcodeproj`. (With the iPad connected, `TEAM_ID=<your team ID> ./test/ios_build.sh --device` does steps 1–4 from the command line, and `--device --smoke` then runs the UI smoke test on the iPad and copies its screenshots and log back to `build/ios/`. `SMOKE_MODEL=lil_gug.glb SMOKE_RIG=lil_gug SMOKE_TRIS=2000` picks another case.)
 2. On the iPad, turn on **Settings › Privacy & Security › Developer Mode**, then connect it with a cable.
 3. Open the Xcode project. Under **Signing & Capabilities**, choose your Personal Team. If Xcode says the bundle ID is taken, change `dev.warent.modelmate` to something unique.
 4. Pick the iPad as the run destination and press **Run**. On the first launch, trust the developer under **Settings › General › VPN & Device Management**.
@@ -96,6 +105,8 @@ ModelMate runs on an iPad as an ordinary app (tested target: iPad Pro, M1 or lat
 With a free Apple ID, the app stops opening after 7 days; run it from Xcode again to renew it.
 
 **Testing in the simulator.** `./test/ios_build.sh --sim` builds for the iPad simulator, installs the app and copies the test models into its `Models/` folder. `--sim --smoke` also runs the UI smoke test inside the simulator. Godot ships its simulator library for x86_64 only, and iOS 26 simulators no longer run x86_64 apps on Apple silicon, so this needs an iOS 18 (or older) simulator runtime (`SIM="<device name>"` picks it). The simulator uses the Mac's CPU and memory, so its timings say nothing about the device.
+
+**Debugging on the device.** Debug builds write the Godot log to `logs/godot.log` in the app's folder and read commands from `cmd.txt` there (one per line: `shot NAME` saves a screenshot to `shots/NAME.png`; `ui-smoke IN OUT` runs the smoke test). With `xcrun devicectl device copy to/from … --domain-type appDataContainer --domain-identifier dev.warent.modelmate`, a connected Mac can drive and inspect the running app. Godot also keeps its `shader_cache` and `vulkan` folders there; they are caches and safe to ignore.
 
 **What differs from the desktop.** UV unwrapping uses the built-in chart unwrapper, because Godot's xatlas module isn't in exported apps. On Lil gug at 2k triangles its layout covers 54% of the texture with 42 charts (xatlas: 55%, 30 charts), and the rendered result differs from the xatlas export by 0.3/255 per pixel on average. The log reports the time and memory of each step. Keep the app in front while it works: iPadOS pauses apps in the background.
 
