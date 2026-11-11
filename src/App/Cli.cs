@@ -8,7 +8,7 @@ namespace ModelMate.App;
 
 /// <summary>
 /// Headless entry: Godot --headless --path . -- --in a.glb --out b.glb [--voxel 192] [--close 1] [--tris 0]
-///   [--tex 1024] [--relax 4] [--falloff 3] [--rig humanoid|single|blob_biped|preset.json] [--save-rig out.json]
+///   [--tex 1024] [--relax 4] [--falloff 3] [--rig humanoid|single|blob_biped|preset.json|none] [--save-rig out.json]
 /// or: -- --make-test-asset test/
 /// </summary>
 public static class Cli
@@ -37,7 +37,7 @@ public static class Cli
             a.TryGetValue("out", out var output);
             if (!a.TryGetValue("in", out var input) || (output == null && !a.ContainsKey("deform-report")))
             {
-                GD.PrintErr("usage: -- --in model.glb (--out out.glb | --deform-report dir [--budgets 1000,2000] [--modes quad,voxel]) [--voxel N] [--close N] [--tris N] [--tex N] [--relax N] [--falloff F] [--rig humanoid|single|blob_biped|preset.json] [--save-rig out.json] [--rotate-y DEG] [--retopo quad|voxel] [--quads N] [--dump-quads out.obj]");
+                GD.PrintErr("usage: -- --in model.glb (--out out.glb | --deform-report dir [--budgets 1000,2000] [--modes quad,voxel]) [--voxel N] [--close N] [--tris N] [--tex N] [--relax N] [--falloff F] [--rig humanoid|single|blob_biped|preset.json|none] [--save-rig out.json] [--rotate-y DEG] [--retopo quad|voxel] [--quads N] [--dump-quads out.obj] [--unwrap charts|cone|xatlas] [--dump-uv out.png] [--uv-debug]");
                 return 2;
             }
             var p = new Pipeline();
@@ -58,6 +58,7 @@ public static class Cli
             if (a.ContainsKey("no-fit")) ModelMate.Core.Quad.QuadRetopo.FitToSurface = false;
             if (a.ContainsKey("no-pin")) ModelMate.Core.Quad.QuadRetopo.PinTips = false;
             if (a.TryGetValue("unwrap", out v)) UvUnwrap.Mode = v;
+            if (a.ContainsKey("uv-debug")) ModelMate.Core.Uv.ChartMerge.Debug = true;
 
             if (a.TryGetValue("curv", out v)) p.S.CurvatureSizing = float.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
             if (a.TryGetValue("adapt", out v)) p.S.Adaptivity = float.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
@@ -69,7 +70,8 @@ public static class Cli
             if (output != null) output = ProjectSettings.GlobalizePath(output);
             var total = System.Diagnostics.Stopwatch.StartNew();
             p.Import(input);
-            FitAndMaybeSave(p, a);
+            bool noRig = p.S.Rig == "none";   // static mesh: retopology and UVs only
+            if (!noRig) FitAndMaybeSave(p, a);
             if (a.TryGetValue("deform-report", out var rd))
             {
                 var budgets = (a.TryGetValue("budgets", out var bs) ? bs : "1000,2000,4000,8000,16000")
@@ -83,13 +85,18 @@ public static class Cli
                 ModelMate.Core.Quad.PolyMesh.FromTriangles(p.Welded).WriteObj(ProjectSettings.GlobalizePath(dq));
                 GD.Print($"Wrote quad layout to {dq}");
             }
-            p.ComputeWeights();
-            if (a.ContainsKey("probe-weights")) ProbeWeights(p);
+            if (!noRig) p.ComputeWeights();
+            if (!noRig && a.ContainsKey("probe-weights")) ProbeWeights(p);
             p.Unwrap();
+            if (a.TryGetValue("dump-uv", out var du))
+            {
+                ChartUnwrap.DumpLayout(p.Split, p.S.TexSize, ProjectSettings.GlobalizePath(du));
+                GD.Print($"Wrote UV layout to {du}");
+            }
 
             var cl = new CheckList();
             Verify.PreExport(cl, p.Welded, p.Split, p.SplitOrigin, p.SplitBones, p.SplitWeights, p.AppliedTriBudget);
-            ChartUnwrap.CheckLayout(cl, $"UV layout ({UvUnwrap.LastUsed})", p.Split, p.S.TexSize, UvUnwrap.LastUsed == "charts");
+            ChartUnwrap.CheckLayout(cl, $"UV layout ({UvUnwrap.LastUsed})", p.Split, p.S.TexSize, UvUnwrap.LastUsed != "xatlas");
             Verify.QuadMesh(cl, p);
             Verify.LimbSides(cl, p);
 
@@ -97,9 +104,9 @@ public static class Cli
             var root = p.BuildScene(name);
             Exporter.ExportGlb(root, output);
             root.Free();
-            GD.Print($"Exported {output} ({p.Split.TriCount} tris, {p.Rig.Bones.Count} bones) in {total.ElapsedMilliseconds} ms");
+            GD.Print($"Exported {output} ({p.Split.TriCount} tris, {(p.Rigged ? p.Rig.Bones.Count : 0)} bones) in {total.ElapsedMilliseconds} ms");
 
-            Verify.RoundTrip(cl, output, Verify.IsHumanoid(p.Rig));
+            Verify.RoundTrip(cl, output, Verify.IsHumanoid(p.Rig), p.Rigged);
             GD.Print("Verification:");
             cl.Print(s => GD.Print(s));
             return cl.AllOk ? 0 : 1;

@@ -1,48 +1,40 @@
 using System;
 using System.Collections.Generic;
 using Godot;
+using ModelMate.Core.Uv;
 
 namespace ModelMate.Core;
 
 /// <summary>
 /// UV unwrap. Splits seam vertices; returns the split mesh plus, for each split vertex, the index of the welded
-/// vertex it came from (to transfer weights/normals). Uses ArrayMesh.LightmapUnwrap (xatlas) when this Godot build
-/// has it (the editor does; exported apps such as the iPad build don't) and <see cref="ChartUnwrap"/> otherwise.
-/// Main thread only.
+/// vertex it came from (to transfer weights/normals). Uses the built-in <see cref="ChartUnwrap"/> on every platform;
+/// xatlas (ArrayMesh.LightmapUnwrap, editor builds only) remains available on request. Main thread only for xatlas.
 /// </summary>
 public static class UvUnwrap
 {
-    /// <summary>"auto" (xatlas when available, else charts), "xatlas" or "charts".</summary>
+    /// <summary>"auto" or "charts" (built-in, merged charts), "cone" (built-in without merging: the old layout,
+    /// kept for comparison) or "xatlas" (editor builds only).</summary>
     public static string Mode = "auto";
-    /// <summary>Which unwrapper produced the last layout: "xatlas" or "charts".</summary>
+    /// <summary>Which unwrapper produced the last layout: "charts", "cone" or "xatlas".</summary>
     public static string LastUsed { get; private set; }
-    // Godot builds xatlas into the editor only; exported apps skip straight to the chart unwrapper
-    static bool _xatlasMissing = !OS.HasFeature("editor");
 
-    public static (MeshData split, int[] origin) Unwrap(MeshData welded, int texSize, Action<string> log = null)
+    public static (MeshData split, int[] origin) Unwrap(MeshData welded, int texSize, Action<string> log = null, SeamHints hints = null)
     {
-        if (Mode == "charts" || (Mode == "auto" && _xatlasMissing)) return Charts(welded, texSize, log);
-        try
+        if (Mode == "xatlas")
         {
             var r = Xatlas(welded, texSize);
             LastUsed = "xatlas";
             return r;
         }
-        catch (XatlasUnavailable) when (Mode == "auto")
-        {
-            _xatlasMissing = true;
-            log?.Invoke("UV unwrap: xatlas is not in this Godot build; using the built-in chart unwrapper");
-            return Charts(welded, texSize, log);
-        }
-    }
-
-    sealed class XatlasUnavailable : Exception { public XatlasUnavailable(string m) : base(m) { } }
-
-    static (MeshData, int[]) Charts(MeshData welded, int texSize, Action<string> log)
-    {
-        var (split, origin, info) = ChartUnwrap.Unwrap(welded, texSize);
-        LastUsed = "charts";
-        log?.Invoke($"UV unwrap (charts): {info.Charts} charts ({info.Regrown} re-grown), fill {info.Fill:P0}, {info.TexelsPerUnit:0.#} texels/unit");
+        bool merge = Mode != "cone";
+        var (split, origin, info) = ChartUnwrap.Unwrap(welded, texSize, -1, hints, merge);
+        LastUsed = merge ? "charts" : "cone";
+        if (merge)
+            log?.Invoke($"UV unwrap (charts): {info.ConeCharts} cone charts -> {info.Charts} charts ({info.Merged} merges, {info.Cut} rings cut open, " +
+                $"{info.Refined} seams moved); seams {info.SeamLength:0.#}× model height, visible-seam cost {info.SeamCostShare:P0} of the cone charts'; " +
+                $"worst chart: aniso p95 {info.AnisoP95:F2}, area stretch p95 {info.AreaStretchMax:F2}; fill {info.Fill:P0}, {info.TexelsPerUnit:0.#} texels/unit [{info.Detail}]");
+        else
+            log?.Invoke($"UV unwrap (cone): {info.Charts} charts ({info.Regrown} re-grown), fill {info.Fill:P0}, {info.TexelsPerUnit:0.#} texels/unit");
         return (split, origin);
     }
 
@@ -65,7 +57,8 @@ public static class UvUnwrap
         for (int t = 0; t < welded.TriCount; t++) area += welded.TriNormal(t).Length() * 0.5;
         float texel = (float)Math.Sqrt(area / (0.6 * texSize * (double)texSize));
         var err = am.LightmapUnwrap(Transform3D.Identity, texel);
-        if (err == Error.Unconfigured || err == Error.Unavailable) throw new XatlasUnavailable($"LightmapUnwrap: {err}");
+        if (err == Error.Unconfigured || err == Error.Unavailable)
+            throw new Exception($"LightmapUnwrap: {err} (xatlas is compiled into Godot editor builds only; use --unwrap charts)");
         if (err != Error.Ok) throw new Exception($"LightmapUnwrap failed: {err}");
 
         var outArr = am.SurfaceGetArrays(0);

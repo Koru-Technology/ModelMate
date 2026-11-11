@@ -8,15 +8,20 @@
 **Libraries used (through Godot, not vendored here)**
 - **[Godot Engine](https://godotengine.org) 4.7** (MIT): the runtime, UI, rendering, glTF import and export (`GLTFDocument`), `Skeleton3D`/`Skin`, and `SkeletonProfileHumanoid` (the bone names and hierarchy of the humanoid rig).
 - **[.NET 8](https://dotnet.microsoft.com) and the Godot .NET SDK** (MIT): the C# toolchain.
-- **[xatlas](https://github.com/jpcy/xatlas)** (MIT): UV unwrapping, called through Godot's `ArrayMesh.LightmapUnwrap`. Godot compiles it into the editor only, so exported apps (the iPad build) use the built-in chart unwrapper instead (`ChartUnwrap.cs`).
+- **[xatlas](https://github.com/jpcy/xatlas)** (MIT): optional UV unwrapping (`--unwrap xatlas`), called through Godot's `ArrayMesh.LightmapUnwrap`. Godot compiles it into the editor only. The default everywhere is the built-in unwrapper (`ChartUnwrap.cs`, `src/Core/Uv/`).
 
 **Algorithms implemented from publications (no code copied)**
 - **Surface Nets**: S. Gibson, *Constrained Elastic Surface Nets*, MICCAI 1998. Used in the voxel remesher (`SurfaceNets.cs`).
 - **Quadric error metrics**: M. Garland and P. Heckbert, *Surface Simplification Using Quadric Error Metrics*, SIGGRAPH 1997. Used for decimation (`QemDecimator.cs`).
 - **Geodesic voxel skinning**: the idea of measuring bone distance through the voxelized interior comes from O. Dionne and M. de Lasa, *Geodesic Voxel Binding for Production Character Meshes*, SCA 2013. `VoxelGeodesicWeights.cs` is a simplified variant (Dijkstra over interior voxels with an inverse-distance falloff), not their full method.
 - **Closest point on a triangle**: C. Ericson, *Real-Time Collision Detection*, 2004 (`Geo.ClosestPtTri`).
-- **Rotating calipers** (minimum-area bounding rectangle): G. Toussaint, *Solving Geometric Problems with the Rotating Calipers*, 1983. **Skyline bin packing**: J. Jylänki, *A Thousand Ways to Pack the Bin*, 2010. Both are used by the chart unwrapper (`ChartUnwrap.cs`).
+- **Rotating calipers** (minimum-area bounding rectangle): G. Toussaint, *Solving Geometric Problems with the Rotating Calipers*, 1983. **Skyline bin packing**: J. Jylänki, *A Thousand Ways to Pack the Bin*, 2010. Both are used by the chart unwrapper (`ChartUnwrap.cs`, `Uv/AtlasPack.cs`, which packs by each chart's outline rather than its rectangle).
+- **Least squares conformal maps**: B. Lévy, S. Petitjean, N. Ray and J. Maillot, *Least Squares Conformal Maps for Automatic Texture Atlas Generation*, SIGGRAPH 2002. **As-rigid-as-possible parameterization**: L. Liu, L. Zhang, Y. Xu, C. Gotsman and S. Gortler, *A Local/Global Approach to Mesh Parameterization*, SGP 2008. Both flatten charts in `Uv/ChartFlatten.cs`.
+- **Maximum flow**: E. A. Dinic, *Algorithm for Solution of a Problem of Maximum Flow in Networks with Power Estimation*, 1970. The minimum cut places seams between neighbouring charts (`Uv/MaxFlow.cs`, `Uv/ChartMerge.cs`).
 - **Ray–triangle intersection**: T. Möller and B. Trumbore, *Fast, Minimum Storage Ray/Triangle Intersection*, 1997 (`Geo.RayTri`).
+
+**Icons**
+- **[Lucide](https://lucide.dev)** (ISC): the toolbar and panel icons, embedded in `src/App/Icons.cs`. The license is in [`THIRD_PARTY.md`](THIRD_PARTY.md).
 
 **Tools used only during development (not part of the app)**
 - **[Pillow](https://python-pillow.org) and [NumPy](https://numpy.org)** (Python): compared rendered screenshots during development.
@@ -42,13 +47,13 @@ dotnet build                     # or let Godot build on launch
 $G --path .                      # UI
 ```
 
-**UI workflow** (right-hand panel, top to bottom):
-1. Import a `.glb` or `.gltf`.
-2. **Skeleton.** Pick a rig preset and click **Fit skeleton**, then left-drag joints to adjust them (left/right edits mirror by default). Edit the skeleton with **Add child**, **Delete**, **Rename**, **Parent**, **Deforms mesh** and **Symmetrize** (copies every `Left*` bone onto its `Right*` partner). **Save** stores it as a preset you can reuse on other models; **Load preset file…** fits a preset `.json` from anywhere.
-3. Pick a mode and a **target triangle count**, then click **Retopologize**. Quad mode is the default. In voxel mode the voxel resolution sets the detail and the result is decimated to the target.
-4. Click **Compute weights**. Tick *Show selected bone's weights* to see a heatmap, choosing the bone in the list or by clicking a joint.
-5. Preview poses with the rotation sliders or **Test pose** (humanoid: a standard bend; rigs from a preset with named poses, such as `blob_biped`: each press shows the next pose). Use **Reset pose** before editing joints again.
-6. Click **Export .glb**. This unwraps the UVs (padded for the texture size you will paint at, *UV padding for*), writes the file, then re-imports it and runs the checks listed below. The results appear in the log.
+**UI workflow**:
+1. Before anything is loaded the window shows one button, **Import Mesh** (tick *Model faces −Z* first if it does). Afterwards, the toolbar in the top-left corner has Import, Retopology, Export, the **Show** menu (source, retopologized mesh, wireframe, skeleton), **Settings** (faces −Z, UV padding for the texture size you will paint at) and the Console. The top right of the view has **Frame** and an orientation cube: drag it to turn the view, or tap a face to view from that side (Front is +Z, Left is the character's left, +X). A dimmed overlay names the step while one runs.
+2. **Retopology** opens by itself after every import (drag it by its title; the toolbar reopens it). Pick a mode and a **target triangle count**, then **Retopologize**. Quad mode is the default. In voxel mode the voxel resolution sets the detail and the result is decimated to the target.
+3. **Export** works from here on. Without a skeleton the export is a static mesh with UVs.
+4. Optional, in the side panel (each section collapses, and remembers it): **Skeleton & weights**. Pick a rig preset and click **Fit skeleton**, then left-drag joints to adjust them (left/right edits mirror by default). Edit the skeleton with **Add child**, **Delete**, **Rename**, **Parent**, **Deforms mesh** and **Symmetrize** (copies every `Left*` bone onto its `Right*` partner). **Save** stores it as a preset you can reuse on other models; **Load preset…** fits a preset `.json` from anywhere. **Compute weights** (Export does it too when a skeleton is fitted), and tick *Show selected bone's weights* for a heatmap, choosing the bone in the list or by clicking a joint.
+5. Optional: **Preview pose** with the rotation sliders or **Test pose** (humanoid: a standard bend; rigs from a preset with named poses, such as `blob_biped`: each press shows the next pose). Use **Reset pose** before editing joints again.
+6. **Export** unwraps the UVs, writes the file, then re-imports it and runs the checks listed below. The results appear in the Console, which opens by itself if a check fails.
 
 Camera: left-drag on empty space or right-drag to orbit, Shift + drag to pan, mouse wheel or trackpad (pinch or scroll) to zoom. **Frame model** re-centres the view.
 
@@ -59,8 +64,8 @@ $G --headless --path . -- --in model.glb --out model_rigged.glb \
    [--retopo quad|voxel] [--tris 8000] [--sizing auto|uniform|adaptive] [--detail 256] [--flow 0] \
    [--no-fit] [--no-pin] [--dump-quads layout.obj] [--seed 1] \
    [--voxel 256] [--close 1] [--tex 1024] [--relax 4] [--falloff 3] \
-   [--rig humanoid|single|blob_biped|preset.json] [--save-rig out.json] \
-   [--rotate-y 180] [--no-joint-aware] [--probe-weights] [--unwrap auto|xatlas|charts]
+   [--rig humanoid|single|blob_biped|preset.json|none] [--save-rig out.json] \
+   [--rotate-y 180] [--no-joint-aware] [--probe-weights] [--unwrap charts|cone|xatlas] [--dump-uv uv.png] [--uv-debug]
 $G --headless --path . -- --in model.glb --rig humanoid --deform-report <dir> [--budgets 1000,2000] [--modes quad,quadflow,voxel]
 $G --headless --path . -- --selftest-fields                      # quad remesher + rig editing self-tests
 $G --headless --path . -- --make-test-asset res://test [--dense] # procedural test humanoids (T-pose, open, A-pose, ~3.8M-tri dense)
@@ -113,7 +118,7 @@ With a free Apple ID, the app stops opening after 7 days; run it from Xcode agai
 
 **Debugging on the device.** Debug builds write the Godot log to `logs/godot.log` in the app's folder and read commands from `cmd.txt` there (one per line: `shot NAME` saves a screenshot to `shots/NAME.png`; `ui-smoke IN OUT` runs the smoke test). With `xcrun devicectl device copy to/from … --domain-type appDataContainer --domain-identifier dev.warent.modelmate`, a connected Mac can drive and inspect the running app. Godot also keeps its `shader_cache` and `vulkan` folders there; they are caches and safe to ignore.
 
-**What differs from the desktop.** UV unwrapping uses the built-in chart unwrapper, because Godot's xatlas module isn't in exported apps. On Lil gug at 2k triangles its layout covers 54% of the texture with 42 charts (xatlas: 55%, 30 charts), and a texture baked onto it rendered within 0.3/255 per pixel of the xatlas version (measured before baking was removed). The log reports the time and memory of each step. Keep the app in front while it works: iPadOS pauses apps in the background.
+**What differs from the desktop.** Nothing in the pipeline: UV unwrapping uses the same built-in unwrapper on both (Godot's xatlas module isn't in exported apps, and is no longer the default on the desktop either). The log reports the time and memory of each step. Keep the app in front while it works: iPadOS pauses apps in the background.
 
 ## Rig presets
 | Preset | For | Bones |
@@ -140,8 +145,30 @@ JSON presets (`rigs/*.json` built in, user presets in Godot's `user://rigs`) sto
 | Voxel remesh | The base mesh decimated by `QemDecimator`: quadric-error edge collapse with manifold and flip guards, up to 6× more detail kept near joints, and an edge-length cap. |
 | Skeleton | `RigPreset` fits a preset to the bounding box (`HumanoidTemplate` for the humanoid), then centers joints inside the mesh by casting rays through it. `RigEdit` does the structural edits and keeps the skeleton valid (one root, parents before children, unique names, no cycles). Each bone's +Y points at its child. |
 | Weights | `VoxelGeodesicWeights`: distance from each bone is measured *through the mesh interior* (Dijkstra over voxels), minus the bone's local thickness. Weight = 1/d^falloff. They're solved once on the dense base surface, smoothed over a world-space radius (2% of model height), mirror-averaged when the model and rig are both symmetric (`Symmetry`), cut to the top 4 bones and normalized, then transferred to the output mesh by closest point. So weights don't change with the triangle budget or the remesh, and they're identical across UV seams. |
-| UVs | `UvUnwrap`: xatlas via `ArrayMesh.LightmapUnwrap` in editor builds, otherwise the built-in `ChartUnwrap`. Charts are padded for the chosen texture size so a painter's bleeding doesn't cross islands. |
+| UVs | `ChartUnwrap` (see *UV unwrapping* below): few large charts, with seams placed where a painter's camera sees them least. Charts are padded for the chosen texture size (8 texels at 1024) so a painter's bleeding doesn't cross islands. |
 | Export | `RigBuilder` and `Exporter` (`GltfDocument`), then `Verify.RoundTrip`. |
+
+## UV unwrapping
+
+Seams are what show in a PBR painter: a brush stroke or a fill across a seam breaks wherever the two sides' texels don't line up. The unwrapper therefore aims for few charts, with seams where they show least, rather than for the tightest packing:
+
+1. **Small starting charts.** Region growing over the triangles, a quad's two triangles always together, within a 50° normal cone, re-grown tighter where a planar projection would fold.
+2. **Seam cost.** Each vertex is looked at from 26 directions around the model; a ray toward each must escape the mesh. Directions toward the front (+Z, the rig templates' convention) weigh most, the sides and top less, the back and underside least, and vertices skinned to a `Head` bone weigh extra. So a seam along an edge costs its length times how visible it is, and creases, armpits, inner legs, the back and the underside are cheap.
+3. **Merging.** Adjacent charts are joined, the most visible shared seam first. A join is kept if the result flattens (LSCM, then ARAP; `ChartFlatten`) with no flipped triangles, no overlap, shape stretch (s1/s2) p95 ≤ 1.3 and area stretch p95 ≤ 1.45. A join that closes a ring (around a limb, or a chart that would wrap round the body) is first tried as an island with a hole; if that doesn't flatten, it is cut open along the cheapest path between its borders, and only kept if that cut costs well under the seam it removes.
+4. **Seam placement.** For the most visible remaining seams, the two charts' triangles are re-split by a minimum cut between their deepest parts, so the seam moves to the cheapest route nearby (kept only if both charts still flatten and the cost drops).
+5. **Packing.** Charts are dropped onto a skyline by their real outline (16 turns each), at one uniform texel density.
+
+`--unwrap cone` stops after step 1 and packs planar projections by rectangle (the unwrapper before merging). `--dump-uv uv.png` writes the layout, `--uv-debug` prints every merge decision.
+
+Measured against `--unwrap cone` (the unwrapper before merging):
+
+| Model | Charts | Seam length (× model height) | Texture covered | Shape stretch p95 | Time |
+|---|---|---|---|---|---|
+| Lil gug, 8k triangles | 127 → 5 | 28 → 9.2 | 52% → 49% | 1.49 → 1.25 | 0.2 → 1.6 s |
+| Lil gug, 2k triangles | 42 → 6 | 20 → 7.7 | 54% → 48% | 1.50 → 1.28 | 0.2 → 0.6 s |
+| Humanoid test model, 8k | 110 → 14 | 20 → 8.6 | 49% → 55% | 1.33 → 1.22 | 0.2 → 1.5 s |
+
+On Lil gug at 8k the front of the face has no seam (only a short loop inside the mouth); on the humanoid the torso and head seams sit on the back and the limb seams on their inner and back sides. Larger meshes take longer: about 7 s at 16k triangles (times on an M-series Mac).
 
 ## Deformation report: quad vs voxel
 
@@ -181,7 +208,7 @@ How quad mode got here, measured with the same report:
 ## Checks run on export
 The mesh is manifold. UVs are in [0,1]. Weights sum to 1 with at most 4 bones per vertex. Seam vertices carry identical attributes. In voxel mode the triangle budget is met.
 
-UV layout: no triangle is flipped against its chart. With the built-in chart unwrapper (iPad builds, or `--unwrap charts`), rasterizing the layout at the texture size also shows no texel claimed by two triangles, charts at least 2 texels apart, and 95th-percentile area stretch at most 1.6. For xatlas layouts (editor builds) those figures are reported as `[METRIC]` lines, since xatlas occasionally packs a few texels of overlap.
+UV layout: no triangle is flipped against its chart. With the built-in unwrapper (the default), rasterizing the layout at the texture size also shows no texel claimed by two triangles, charts at least 2 texels apart, and 95th-percentile area stretch at most 1.6. For xatlas layouts (`--unwrap xatlas`, editor builds) those figures are reported as `[METRIC]` lines, since xatlas occasionally packs a few texels of overlap. Also reported: the number of charts, the total seam length (in model heights) and the shape stretch.
 
 In quad mode:
 - no fallback was used;
@@ -209,4 +236,4 @@ Humanoid rigs additionally:
 - Parts that are just single-sided surfaces with nothing inside (capes, hair cards) end up as thin closed shells.
 - Weights are automatic only; there's no weight painting. The humanoid template has no finger, eye or jaw bones.
 - No texture baking: colour and surface detail from the source are not transferred. Paint the export in a PBR painter.
-- Exported apps (such as the iPad build) unwrap with the built-in chart unwrapper, which makes somewhat more seams than xatlas.
+- Seams are placed for a model facing +Z; rotate other models on import (`--rotate-y`) for the best placement. Some seams stay where a chart reached its stretch limit, and they follow the stair-stepped borders of the starting charts there. Small cavities such as a mouth can keep a seam around them.

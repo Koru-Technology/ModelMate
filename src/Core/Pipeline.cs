@@ -369,11 +369,21 @@ public sealed class Pipeline
         return (bones, weights, symmetric, surfBvh);
     }
 
-    /// <summary>[main] UV unwrap + transfer of welded attributes onto split vertices.</summary>
+    /// <summary>Weights exist for the current skeleton, so the export is rigged; otherwise it is a static mesh.</summary>
+    public bool Rigged => Rig != null && WeldedBones != null;
+
+    /// <summary>UV unwrap + transfer of welded attributes (weights, when rigged) onto split vertices.</summary>
     public void Unwrap()
     {
-        (Split, SplitOrigin) = Timed("uv unwrap", () => UvUnwrap.Unwrap(Welded, S.TexSize, L));
+        var hints = new Uv.SeamHints { Rig = Rig, Bones = Rigged ? WeldedBones : null, Weights = Rigged ? WeldedWeights : null };
+        (Split, SplitOrigin) = Timed("uv unwrap", () => UvUnwrap.Unwrap(Welded, S.TexSize, L, hints));
         int n = Split.VertexCount;
+        if (!Rigged)
+        {
+            SplitBones = null; SplitWeights = null;
+            L($"Unwrap: {Welded.VertexCount} welded -> {n} split verts (no skeleton: static mesh)");
+            return;
+        }
         SplitBones = new int[n * 4];
         SplitWeights = new float[n * 4];
         for (int v = 0; v < n; v++)
@@ -385,9 +395,9 @@ public sealed class Pipeline
         L($"Unwrap: {Welded.VertexCount} welded -> {n} split verts");
     }
 
-    /// <summary>[main]</summary>
+    /// <summary>[main] The export scene: skinned to the skeleton when rigged, else a plain mesh.</summary>
     public Node3D BuildScene(string name)
     {
-        return RigBuilder.Build(name, Split, SplitBones, SplitWeights, Rig);
+        return Rigged ? RigBuilder.Build(name, Split, SplitBones, SplitWeights, Rig) : RigBuilder.BuildStatic(name, Split);
     }
 }

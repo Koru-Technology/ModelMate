@@ -21,11 +21,12 @@ if [[ -f test/lil_gug.glb ]]; then
   run --in res://test/lil_gug.glb --out res://test/out_reg.glb --tris 2000 --rig res://test/rigs/lil_gug.json
   run --in res://test/lil_gug.glb --out res://test/out_reg.glb --rig blob_biped        # built-in preset fits from scratch
 fi
-run --in res://test/humanoid_apose.glb --out res://test/out_reg.glb --tris 2000 --unwrap charts   # unwrapper used by exported apps (iPad)
-run --in res://test/humanoid_open.glb --out res://test/out_reg.glb --retopo voxel --voxel 128 --tris 3000 --unwrap charts
-[[ -f test/lil_gug.glb ]] && run --in res://test/lil_gug.glb --out res://test/out_reg.glb --tris 2000 --rig res://test/rigs/lil_gug.json --unwrap charts
-[[ -f test/lil_gug2.glb ]] && run --in res://test/lil_gug2.glb --out res://test/out_reg.glb --tris 2000 --rig res://test/rigs/lil_gug.json --unwrap charts   # Nomad export with lights + floor
+run --in res://test/humanoid_apose.glb --out res://test/out_reg.glb --tris 2000 --unwrap cone   # baseline unwrapper (cone charts, no merging)
+run --in res://test/humanoid_open.glb --out res://test/out_reg.glb --retopo voxel --voxel 128 --tris 3000 --unwrap cone
+[[ -f test/lil_gug.glb ]] && run --in res://test/lil_gug.glb --out res://test/out_reg.glb --tris 16000 --rig res://test/rigs/lil_gug.json   # large chart merges
+[[ -f test/lil_gug2.glb ]] && run --in res://test/lil_gug2.glb --out res://test/out_reg.glb --tris 2000 --rig res://test/rigs/lil_gug.json   # Nomad export with lights + floor
 run --in res://test/humanoid.glb --out res://test/out_reg.glb --rig single
+run --in res://test/humanoid.glb --out res://test/out_reg.glb --rig none --tris 2000   # static mesh: no skeleton
 run --in res://test/humanoid.glb --out res://test/out_reg.glb --retopo voxel --tris 8000
 run --in res://test/humanoid_open.glb --out res://test/out_reg.glb --retopo voxel --voxel 128 --tris 3000
 rm -f test/out_reg.glb test/out_q.glb

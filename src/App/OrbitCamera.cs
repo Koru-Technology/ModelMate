@@ -11,6 +11,7 @@ public partial class OrbitCamera : Node3D
     float _yaw = 0, _pitch = -0.15f, _dist = 4;
     bool _dragging;
     public float Yaw => _yaw;
+    public float Pitch => _pitch;
     public float Distance => _dist;
 
     public override void _Ready()
@@ -43,6 +44,38 @@ public partial class OrbitCamera : Node3D
     }
 
     public void Refresh() => Apply();
+
+    /// <summary>Turns (animated) to look at the target from direction d, e.g. +Z for the front view.</summary>
+    public void ViewFrom(Vector3 d)
+    {
+        d = d.Normalized();
+        // camera position = target + b.Z·dist with b = Ry(yaw)·Rx(pitch), so b.Z = (cos p sin y, −sin p, cos p cos y)
+        float pitch = Math.Clamp(-MathF.Asin(Math.Clamp(d.Y, -1, 1)), -1.5f, 1.5f);
+        float yaw = MathF.Abs(d.Y) > 0.999f ? _yaw : MathF.Atan2(d.X, d.Z);
+        // shortest way round
+        float dy = Mathf.Wrap(yaw - _yaw, -MathF.PI, MathF.PI);
+        float y0 = _yaw, p0 = _pitch;
+        _viewTween?.Kill();
+        _viewTween = CreateTween();
+        _viewTween.TweenMethod(Callable.From<float>(t =>
+        {
+            float e = 1 - (1 - t) * (1 - t);
+            _yaw = y0 + dy * e;
+            _pitch = p0 + (pitch - p0) * e;
+            Apply();
+        }), 0f, 1f, 0.25f);
+    }
+
+    Tween _viewTween;
+
+    /// <summary>Orbits by a drag of the given size in pixels (radians per pixel = speed).</summary>
+    public void Rotate(Vector2 relative, float speed = 0.008f)
+    {
+        _viewTween?.Kill();
+        _yaw -= relative.X * speed;
+        _pitch = Math.Clamp(_pitch - relative.Y * speed, -1.5f, 1.5f);
+        Apply();
+    }
 
     // ---------------------------------------------------------------- input
     //
@@ -92,13 +125,8 @@ public partial class OrbitCamera : Node3D
         }
         else if (e is InputEventMouseMotion mm && (_dragging || _leftDragging) && !MultiTouch)
         {
-            if (mm.ShiftPressed) Pan(mm.Relative);
-            else
-            {
-                _yaw -= mm.Relative.X * 0.008f;
-                _pitch = Math.Clamp(_pitch - mm.Relative.Y * 0.008f, -1.5f, 1.5f);
-            }
-            Apply();
+            if (mm.ShiftPressed) { Pan(mm.Relative); Apply(); }
+            else Rotate(mm.Relative);
         }
         else if (e is InputEventPanGesture pg)
         {

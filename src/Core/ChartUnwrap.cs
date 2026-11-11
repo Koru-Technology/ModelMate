@@ -1,29 +1,46 @@
 using System;
 using System.Collections.Generic;
 using Godot;
+using ModelMate.Core.Uv;
 
 namespace ModelMate.Core;
 
 /// <summary>
-/// Pure C# UV atlas, used where Godot's xatlas module is missing (it is compiled into the editor only, so exported
-/// apps such as the iPad build lack <c>ArrayMesh.LightmapUnwrap</c>).
+/// Pure C# UV atlas: the default unwrapper on every platform.
 ///
 /// 1. Charts: region growing over triangle adjacency; a unit joins when its normal is within a cone of the chart's
 ///    running average normal. Both triangles of a quad (TriFlags diagonal) form one unit, so seams follow real edges.
-/// 2. Each chart is projected onto the plane of its average normal (stretch ≤ 1/cos(cone)). Charts with flipped or
-///    overlapping triangles are re-grown with a tighter cone, down to single units.
-/// 3. Each chart is rotated to its minimum-area bounding rectangle and packed with a skyline packer at uniform texel
-///    density with a gutter, shrinking the density until everything fits.
-/// The texture baker samples the source per texel, so projection stretch only changes texel density, not correctness.
+///    Charts with flipped or overlapping triangles under planar projection are re-grown with a tighter cone, down to
+///    single units. These small charts are the always-valid starting point.
+/// 2. Merging (<see cref="ChartMerge"/>): adjacent charts are joined, most visible shared seam first
+///    (<see cref="SeamCost"/>: front, head, unoccluded), as long as the union flattens (LSCM, then ARAP,
+///    <see cref="ChartFlatten"/>) without flips, overlaps or excess distortion. A union that closes a ring is kept as
+///    an island with a hole, or else cut open along its cheapest path when that costs well under the seam removed.
+///    Then the most visible remaining seams are moved by a minimum cut to the cheapest route nearby. What remains
+///    are a few large charts whose seams sit where they show least.
+/// 3. Packing (<see cref="AtlasPack"/>): charts interlock on a skyline by their real outlines at one uniform texel
+///    density, with a gutter that scales with the texture size.
+/// Mode "cone" (<c>merge: false</c>) stops after step 1 and packs planar projections by bounding rectangle: the
+/// unwrapper as it was before merging, kept as a baseline.
 /// </summary>
 public static class ChartUnwrap
 {
-    public struct Info { public int Charts, SplitVerts, Regrown; public float Fill, TexelsPerUnit; }
+    public struct Info
+    {
+        public int Charts, SplitVerts, Regrown, ConeCharts, Merged, Cut, Refined;
+        public float Fill, TexelsPerUnit, SeamLength, SeamCostShare, AnisoP95, AreaStretchMax;
+        public string Detail;
+    }
+
+    /// <summary>Gutter between charts in texels for a texture size (8 at 1024).</summary>
+    public static int DefaultPadding(int texSize) => Math.Max(4, texSize / 128);
 
     static readonly float[] ConeDeg = { 50f, 35f, 20f };
 
-    public static (MeshData split, int[] origin, Info info) Unwrap(MeshData m, int texSize, int padTexels = 4)
+    public static (MeshData split, int[] origin, Info info) Unwrap(MeshData m, int texSize, int padTexels = -1,
+        SeamHints hints = null, bool merge = true)
     {
+        if (padTexels < 0) padTexels = merge ? DefaultPadding(texSize) : 4;
         int nt = m.TriCount;
         var info = new Info();
         var fn = new Vector3[nt];
@@ -125,6 +142,8 @@ public static class ChartUnwrap
             }
         }
 
+        if (merge) return Merged(m, charts, units, nbr, texSize, padTexels, hints, info);
+
         // project, rotate to min-area rectangle, landscape orientation
         int nc = charts.Count;
         var chartTris = new List<int>[nc];
@@ -224,6 +243,171 @@ public static class ChartUnwrap
         info.TexelsPerUnit = s;
         info.Fill = (float)(uvArea / ((double)texSize * texSize));
         return (split, origin.ToArray(), info);
+    }
+
+    static (MeshData split, int[] origin, Info info) Merged(MeshData m, List<(List<int> units, Vector3 n)> charts, List<int[]> units,
+        int[] nbr, int texSize, int pad, SeamHints hints, Info info)
+    {
+        int nt = m.TriCount;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var g = new TriGeom(m);
+        var vis = SeamCost.Visibility(m, hints);
+        var cost = SeamCost.EdgeCost(m, vis);
+        long msVis = sw.ElapsedMilliseconds; sw.Restart();
+
+        var init = new List<(List<int> tris, Dictionary<int, Vector2> planar)>(charts.Count);
+        var coneOf = new int[nt];
+        foreach (var (cu, cn) in charts)
+        {
+            var tris = new List<int>();
+            foreach (int u in cu)
+                if (u < 0) tris.Add(-1 - u); else tris.AddRange(units[u]);
+            var (bu, bv) = Basis(cn);
+            var pts = new Dictionary<int, Vector2>();
+            foreach (int t in tris)
+            {
+                coneOf[t] = init.Count;
+                for (int k = 0; k < 3; k++)
+                {
+                    int v = m.Tris[3 * t + k];
+                    if (!pts.ContainsKey(v)) pts[v] = new Vector2(m.Pos[v].Dot(bu), m.Pos[v].Dot(bv));
+                }
+            }
+            init.Add((tris, pts));
+        }
+        var flat = ChartMerge.Run(m, g, nbr, init, cost, out var ms);
+        long msMerge = sw.ElapsedMilliseconds; sw.Restart();
+        var (place, s) = AtlasPack.Pack(flat, texSize, pad);
+        long msPack = sw.ElapsedMilliseconds;
+
+        int nc = flat.Count;
+        var pos = new List<Vector3>();
+        var nrm = new List<Vector3>();
+        var uv = new List<Vector2>();
+        var origin = new List<int>();
+        var outTris = new int[3 * nt];
+        for (int c = 0; c < nc; c++)
+        {
+            var ch = flat[c];
+            float ca = MathF.Cos(place[c].Angle), sa = MathF.Sin(place[c].Angle);
+            var splitOf = new int[ch.Verts.Length];
+            for (int l = 0; l < splitOf.Length; l++)
+            {
+                int v = ch.Verts[l];
+                splitOf[l] = pos.Count;
+                pos.Add(m.Pos[v]);
+                nrm.Add(m.Nrm != null ? m.Nrm[v] : Vector3.Up);
+                var p = ch.Uv[l];
+                var q = new Vector2(ca * p.X - sa * p.Y, sa * p.X + ca * p.Y) * s + place[c].Offset;
+                uv.Add(q / texSize);
+                origin.Add(v);
+            }
+            for (int i = 0; i < ch.Tris.Count; i++)
+                for (int k = 0; k < 3; k++) outTris[3 * ch.Tris[i] + k] = splitOf[ch.TriLocal[3 * i + k]];
+        }
+        var split = new MeshData(pos.ToArray(), outTris) { Nrm = nrm.ToArray(), Uv = uv.ToArray() };
+
+        double uvArea = 0;
+        for (int t = 0; t < nt; t++)
+        {
+            var a = split.Uv[outTris[3 * t]]; var b = split.Uv[outTris[3 * t + 1]]; var c = split.Uv[outTris[3 * t + 2]];
+            uvArea += 0.5 * MathF.Abs(Cross(b - a, c - a));
+        }
+        // seams: welded edges whose two sides use different split vertices
+        double seamLen = 0, seamCost = 0, coneCost = 0;
+        for (int t = 0; t < nt; t++)
+            for (int k = 0; k < 3; k++)
+            {
+                int o = nbr[3 * t + k];
+                if (o < t) continue;   // each interior edge once (and boundary edges, o = -1, never)
+                int wa = m.Tris[3 * t + k], wb = m.Tris[3 * t + (k + 1) % 3];
+                int sa = outTris[3 * t + k], sb = outTris[3 * t + (k + 1) % 3], oa = -1, ob = -1;
+                for (int kk = 0; kk < 3; kk++)
+                {
+                    if (m.Tris[3 * o + kk] == wa) oa = outTris[3 * o + kk];
+                    if (m.Tris[3 * o + kk] == wb) ob = outTris[3 * o + kk];
+                }
+                if (sa != oa || sb != ob)
+                {
+                    seamLen += (m.Pos[wa] - m.Pos[wb]).Length();
+                    seamCost += cost[3 * t + k];
+                }
+                if (coneOf[o] != coneOf[t]) coneCost += cost[3 * t + k];
+            }
+        float aniso = 1, spread = 1;
+        foreach (var ch in flat) { aniso = MathF.Max(aniso, ch.Quality.AnisoP95); spread = MathF.Max(spread, ch.Quality.AreaStretch); }
+
+        info.Charts = nc;
+        info.ConeCharts = ms.Initial;
+        info.Merged = ms.Merged;
+        info.Cut = ms.Cut;
+        info.Refined = ms.Refined;
+        info.SplitVerts = pos.Count;
+        info.TexelsPerUnit = s;
+        info.Fill = (float)uvArea;
+        info.SeamLength = (float)(seamLen / Math.Max(m.Bounds().Size.Y, 1e-30f));
+        info.SeamCostShare = (float)(seamCost / Math.Max(coneCost, 1e-30));
+        info.AnisoP95 = aniso;
+        info.AreaStretchMax = spread;
+        info.Detail = $"visibility {msVis} ms, merge {msMerge - ms.MsRefine} ms, refine {ms.MsRefine} ms, pack {msPack} ms";
+        if (ChartMerge.Debug)
+            GD.Print($"UV unwrap detail: merges {ms.Merged}/{ms.Trials} tried (rejected: topology {ms.RejectedTopology}, distortion {ms.RejectedDistortion}, " +
+                $"overlap {ms.RejectedOverlap}; ARAP rescued {ms.Rescued}, polished {ms.Polished}); refinements {ms.Refined}/{ms.RefineTried}; " +
+                $"lscm {ms.MsLscm} ms/{ms.ItLscm} it, arap {ms.MsArap} ms/{ms.ItArap} it, final pass {ms.MsFinal} ms; lscm global {ms.NGlobal}× {ms.MsGlobal} ms (avg {ms.VertsGlobal / Math.Max(1, ms.NGlobal)} verts), local {ms.NLocal}× {ms.MsLocal} ms");
+        return (split, origin.ToArray(), info);
+    }
+
+    /// <summary>Writes the layout as a PNG: each chart in its own colour, seams dark.</summary>
+    public static void DumpLayout(MeshData split, int size, string path)
+    {
+        int nt = split.TriCount;
+        var parent = new int[split.VertexCount];
+        for (int i = 0; i < parent.Length; i++) parent[i] = i;
+        int Find(int x) { while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
+        for (int t = 0; t < nt; t++)
+            for (int k = 1; k < 3; k++) { int a = Find(split.Tris[3 * t]), b = Find(split.Tris[3 * t + k]); if (a != b) parent[b] = a; }
+        var px = new byte[size * size * 3];
+        Array.Fill(px, (byte)255);
+        for (int t = 0; t < nt; t++)
+        {
+            uint h = (uint)Find(split.Tris[3 * t]) * 2654435761u;
+            byte r = (byte)(110 + (h & 0x7f)), g = (byte)(110 + ((h >> 8) & 0x7f)), b = (byte)(110 + ((h >> 16) & 0x7f));
+            var p0 = split.Uv[split.Tris[3 * t]] * size; var p1 = split.Uv[split.Tris[3 * t + 1]] * size; var p2 = split.Uv[split.Tris[3 * t + 2]] * size;
+            float area = Cross(p1 - p0, p2 - p0);
+            if (MathF.Abs(area) < 1e-12f) continue;
+            if (area < 0) (p1, p2) = (p2, p1);
+            int x0 = Math.Max(0, (int)MathF.Floor(MathF.Min(p0.X, MathF.Min(p1.X, p2.X)))), x1 = Math.Min(size - 1, (int)MathF.Ceiling(MathF.Max(p0.X, MathF.Max(p1.X, p2.X))));
+            int y0 = Math.Max(0, (int)MathF.Floor(MathF.Min(p0.Y, MathF.Min(p1.Y, p2.Y)))), y1 = Math.Min(size - 1, (int)MathF.Ceiling(MathF.Max(p0.Y, MathF.Max(p1.Y, p2.Y))));
+            for (int y = y0; y <= y1; y++)
+                for (int x = x0; x <= x1; x++)
+                {
+                    var q = new Vector2(x + 0.5f, y + 0.5f);
+                    if (Cross(p1 - p0, q - p0) < 0 || Cross(p2 - p1, q - p1) < 0 || Cross(p0 - p2, q - p2) < 0) continue;
+                    int i = 3 * (y * size + x);
+                    px[i] = r; px[i + 1] = g; px[i + 2] = b;
+                }
+        }
+        // chart borders (split edges used once)
+        var use = new Dictionary<long, int>(EdgeKeyComparer.Instance);
+        for (int t = 0; t < nt; t++)
+            for (int k = 0; k < 3; k++) { long key = Key(split.Tris[3 * t + k], split.Tris[3 * t + (k + 1) % 3]); use[key] = use.TryGetValue(key, out int u) ? u + 1 : 1; }
+        foreach (var (key, u) in use)
+        {
+            if (u != 1) continue;
+            var a = split.Uv[(int)(key >> 32)] * size; var b = split.Uv[(int)(key & 0xffffffff)] * size;
+            int steps = Math.Max(1, (int)MathF.Ceiling((b - a).Length() * 2));
+            for (int i = 0; i <= steps; i++)
+            {
+                var q = a + (b - a) * (i / (float)steps);
+                int x = (int)q.X, y = (int)q.Y;
+                if (x < 0 || y < 0 || x >= size || y >= size) continue;
+                int j = 3 * (y * size + x);
+                px[j] = 60; px[j + 1] = 20; px[j + 2] = 20;
+            }
+        }
+        var img = Image.CreateFromData(size, size, false, Image.Format.Rgb8, px);
+        var err = img.SavePng(path);
+        if (err != Error.Ok) throw new Exception($"DumpLayout: could not write {path} ({err})");
     }
 
     static long Key(int a, int b) => a < b ? ((long)a << 32) | (uint)b : ((long)b << 32) | (uint)a;
@@ -334,7 +518,7 @@ public static class ChartUnwrap
     }
 
     /// <summary>Rotation angle that minimizes the axis-aligned bounding box of the points (rotating calipers).</summary>
-    static float MinAreaAngle(List<Vector2> pts)
+    internal static float MinAreaAngle(List<Vector2> pts)
     {
         var hull = ConvexHull(pts);
         if (hull.Count < 3) return 0;
@@ -535,6 +719,32 @@ public static class ChartUnwrap
         }
         // xatlas layouts (editor builds) are reported, not gated: it occasionally packs a few texels of overlap
         else cl.Metric($"{label}: {overlap} texels claimed twice, {touching} texels touching another chart, area stretch p95 {p95:F2}");
-        cl.Metric($"{label}: {chartSign.Count} charts, {split.VertexCount} split verts, {covered / (float)(texSize * texSize):P0} of texture covered");
+        // seams: split-mesh edges used by one triangle only (each seam has two such sides); shape distortion
+        var edgeUse = new Dictionary<long, int>(EdgeKeyComparer.Instance);
+        for (int t = 0; t < nt; t++)
+            for (int k = 0; k < 3; k++)
+            {
+                long key = Key(split.Tris[3 * t + k], split.Tris[3 * t + (k + 1) % 3]);
+                edgeUse[key] = edgeUse.TryGetValue(key, out int u) ? u + 1 : 1;
+            }
+        double seam = 0;
+        foreach (var (key, use) in edgeUse)
+            if (use == 1) seam += (split.Pos[(int)(key >> 32)] - split.Pos[(int)(key & 0xffffffff)]).Length();
+        var geo = new TriGeom(split);
+        var an = new List<(float v, float w)>();
+        for (int t = 0; t < nt; t++)
+        {
+            if (geo.Area[t] <= 0) continue;
+            var (s1, s2, _) = geo.Sv(t, split.Uv[split.Tris[3 * t]], split.Uv[split.Tris[3 * t + 1]], split.Uv[split.Tris[3 * t + 2]]);
+            an.Add((s2 > 1e-12f ? s1 / s2 : 1e6f, geo.Area[t]));
+        }
+        an.Sort((a, b) => a.v.CompareTo(b.v));
+        double wTot = 0, acc = 0;
+        foreach (var a in an) wTot += a.w;
+        float aniso95 = 1;
+        foreach (var a in an) { acc += a.w; if (acc >= 0.95 * wTot) { aniso95 = a.v; break; } }
+        float height = MathF.Max(split.Bounds().Size.Y, 1e-30f);
+        cl.Metric($"{label}: {chartSign.Count} charts, {split.VertexCount} split verts, {covered / (float)(texSize * texSize):P0} of texture covered, " +
+            $"seams {seam / 2 / height:0.#}× model height, shape stretch (s1/s2) p95 {aniso95:F2}");
     }
 }

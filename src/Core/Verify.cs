@@ -33,6 +33,21 @@ public static class Verify
         bool uvOk = split.Uv.All(u => u.X >= -1e-4f && u.Y >= -1e-4f && u.X <= 1.0001f && u.Y <= 1.0001f);
         cl.Check(uvOk, "UVs within [0,1]");
 
+        if (bones4 == null)
+        {
+            // static mesh (no skeleton yet): seams must still join up
+            int bad0 = 0, pairs0 = 0;
+            var first0 = new Dictionary<int, int>();
+            for (int v = 0; v < split.VertexCount; v++)
+            {
+                if (!first0.TryGetValue(origin[v], out int f)) { first0[origin[v]] = v; continue; }
+                pairs0++;
+                if (split.Pos[v] != split.Pos[f] || split.Nrm[v] != split.Nrm[f]) bad0++;
+            }
+            cl.Check(bad0 == 0, $"seam consistency ({pairs0} split copies, {bad0} mismatched)");
+            return;
+        }
+
         int badSum = 0, nonFinite = 0;
         for (int v = 0; v < split.VertexCount; v++)
         {
@@ -161,7 +176,8 @@ public static class Verify
             .All(n => r.Find(n) >= 0);
 
     /// <summary>Re-imports the exported glb, poses LeftUpperArm, CPU-skins and checks deformation.</summary>
-    public static void RoundTrip(CheckList cl, string path, bool humanoid)
+    /// <param name="rigged">false for a static-mesh export: only the mesh and its UVs are checked</param>
+    public static void RoundTrip(CheckList cl, string path, bool humanoid, bool rigged = true)
     {
         var doc = new GltfDocument();
         var state = new GltfState();
@@ -173,6 +189,15 @@ public static class Verify
         {
             var skel = FindFirst<Skeleton3D>(root);
             var mi = FindFirst<MeshInstance3D>(root);
+            if (!rigged)
+            {
+                cl.Check(mi != null, "re-imported scene has a MeshInstance3D");
+                if (mi == null) return;
+                var a0 = mi.Mesh.SurfaceGetArrays(0);
+                var uv0 = a0[(int)Mesh.ArrayType.TexUV].VariantType == Variant.Type.Nil ? null : a0[(int)Mesh.ArrayType.TexUV].AsVector2Array();
+                cl.Check(uv0 != null && uv0.Length == a0[(int)Mesh.ArrayType.Vertex].AsVector3Array().Length, "re-imported mesh has UVs");
+                return;
+            }
             cl.Check(skel != null && mi != null && mi.Skin != null, "re-imported scene has Skeleton3D + skinned MeshInstance3D");
             if (skel == null || mi?.Skin == null) return;
 
