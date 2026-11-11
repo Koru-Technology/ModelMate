@@ -24,6 +24,8 @@ public sealed class Level
     public float[] S;               // target edge length per vertex (uniform unless a sizing field is given)
     public Vector3[] CO;            // position constraint: a lattice point should lie here (when COw > 0)
     public float[] COw;
+    public Vector3[] CD;            // optional: constraint line direction (a lattice point on the line CO + t·CD); zero = point
+    public Features Features;       // fine level only: sharp edges and corners (hard-surface mode), or null
 
     public int Count => V.Length;
 }
@@ -265,7 +267,7 @@ public sealed class Hierarchy
     /// </summary>
     public void PropagatePositionConstraints()
     {
-        foreach (var l in Levels) { l.CO ??= new Vector3[l.Count]; l.COw ??= new float[l.Count]; }
+        foreach (var l in Levels) { l.CO ??= new Vector3[l.Count]; l.COw ??= new float[l.Count]; l.CD ??= new Vector3[l.Count]; }
         for (int li = 0; li < Levels.Count - 1; li++)
         {
             var f = Levels[li]; var c = Levels[li + 1];
@@ -274,8 +276,11 @@ public sealed class Hierarchy
                 int u0 = c.Up0[i], u1 = c.Up1[i];
                 int src = f.COw[u0] > 0 ? u0 : (u1 >= 0 && f.COw[u1] > 0 ? u1 : -1);
                 if (src < 0) { c.COw[i] = 0; continue; }
+                // a point constraint beats a line constraint when both children have one
+                if (u1 >= 0 && f.COw[u0] > 0 && f.COw[u1] > 0 && f.CD[u0] != Vector3.Zero && f.CD[u1] == Vector3.Zero) src = u1;
                 c.CO[i] = f.CO[src];
                 c.COw[i] = f.COw[src];
+                c.CD[i] = f.CD[src];
             }
         }
     }

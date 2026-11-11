@@ -33,7 +33,7 @@ if [[ "$1" == "--device" ]]; then
   xcrun devicectl list devices --json-output build/ios/devices.json > /dev/null 2>&1
   DEV=$(python3 -c "import json; d=json.load(open('build/ios/devices.json'))['result']['devices']; print(next(x['identifier'] for x in d if x['hardwareProperties'].get('deviceType')=='iPad' and x['connectionProperties'].get('tunnelState')!='unavailable'))")
   xcrun devicectl device install app --device $DEV build/ios/dddev/Build/Products/Debug-iphoneos/ModelMate.app > /dev/null
-  for f in test/humanoid.glb test/lil_gug.glb; do
+  for f in test/humanoid.glb test/lil_gug.glb test/hs_building.glb test/hs_gadget.glb; do
     [[ -f $f ]] && xcrun devicectl device copy to --device $DEV --domain-type appDataContainer \
       --domain-identifier $BUNDLE --source $f --destination Documents/Models/${f:t} > /dev/null
   done
@@ -43,8 +43,8 @@ if [[ "$1" == "--device" ]]; then
   [[ "$2" == "--smoke" ]] || exit 0
   # UI smoke test on the device: arguments go in Documents/ui_smoke.txt; progress is read from the app's log
   RUN=$RANDOM$RANDOM
-  # SMOKE_MODEL / SMOKE_RIG / SMOKE_TRIS pick the case (default: test humanoid, humanoid rig, 8000 triangles)
-  printf -- "--ui-smoke\nuser://Models/${SMOKE_MODEL:-humanoid.glb}\nuser://Exports/smoke\n--rig\n${SMOKE_RIG:-humanoid}\n--tris\n${SMOKE_TRIS:-8000}\n--run-id\n$RUN\n" > build/ios/ui_smoke.txt
+  # SMOKE_MODEL / SMOKE_RIG / SMOKE_TRIS / SMOKE_SURFACE pick the case (default: test humanoid, humanoid rig, 8000 triangles, organic)
+  printf -- "--ui-smoke\nuser://Models/${SMOKE_MODEL:-humanoid.glb}\nuser://Exports/smoke\n--rig\n${SMOKE_RIG:-humanoid}\n--tris\n${SMOKE_TRIS:-8000}\n--surface\n${SMOKE_SURFACE:-organic}\n--run-id\n$RUN\n" > build/ios/ui_smoke.txt
   dc() { xcrun devicectl device copy "$1" --device $DEV --domain-type appDataContainer --domain-identifier $BUNDLE \
            --source "$2" --destination "$3" > /dev/null 2>&1; }
   dc to build/ios/ui_smoke.txt Documents/ui_smoke.txt

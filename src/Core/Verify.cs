@@ -42,7 +42,7 @@ public static class Verify
             {
                 if (!first0.TryGetValue(origin[v], out int f)) { first0[origin[v]] = v; continue; }
                 pairs0++;
-                if (split.Pos[v] != split.Pos[f] || split.Nrm[v] != split.Nrm[f]) bad0++;
+                if (split.Pos[v] != split.Pos[f] || (welded.Hard == null && split.Nrm[v] != split.Nrm[f])) bad0++;
             }
             cl.Check(bad0 == 0, $"seam consistency ({pairs0} split copies, {bad0} mismatched)");
             return;
@@ -64,7 +64,8 @@ public static class Verify
         {
             if (!first.TryGetValue(origin[v], out int f)) { first[origin[v]] = v; continue; }
             seamPairs++;
-            bool same = split.Pos[v] == split.Pos[f] && split.Nrm[v] == split.Nrm[f];
+            // normals may differ across hard edges (hard surface), never otherwise
+            bool same = split.Pos[v] == split.Pos[f] && (welded.Hard != null || split.Nrm[v] == split.Nrm[f]);
             for (int k = 0; k < 4 && same; k++)
                 same = bones4[4 * v + k] == bones4[4 * f + k] && w4[4 * v + k] == w4[4 * f + k];
             if (!same) seamBad++;
@@ -125,6 +126,157 @@ public static class Verify
     /// midpoint (vertices mostly owned by that bone only). Quad mode counts real quad edges; voxel mode counts all
     /// triangle edges (the cross-section polygon's segment count).
     /// </summary>
+    /// <summary>Reference sharp edges of a source mesh, sampled: points, crease directions, and corner points.</summary>
+    public sealed class SourceCreases
+    {
+        public List<Vector3> P = new(), Dir = new();
+        public List<Vector3> Corners = new();
+        public double Length;
+    }
+
+    /// <summary>
+    /// Sharp edges of the source (dihedral above the angle, after welding coincident vertices), sampled every
+    /// `step`, keeping only samples on the visible surface (within `onSurface` of the base mesh: an edge buried inside
+    /// another part is not a crease of the union). Corners: vertices where three or more such edges meet.
+    /// </summary>
+    public static SourceCreases FindSourceCreases(MeshData src, MeshData surface, float angleDeg, float step, float onSurface)
+    {
+        var r = new SourceCreases();
+        // weld by position
+        var box = src.Bounds();
+        float q = 1e-6f * box.Size.Length();
+        var id = new Dictionary<(long, long, long), int>();
+        var weld = new int[src.VertexCount];
+        for (int v = 0; v < src.VertexCount; v++)
+        {
+            var p = src.Pos[v];
+            var key = ((long)MathF.Round(p.X / q), (long)MathF.Round(p.Y / q), (long)MathF.Round(p.Z / q));
+            if (!id.TryGetValue(key, out int w)) { w = id.Count; id[key] = w; }
+            weld[v] = w;
+        }
+        var wpos = new Vector3[id.Count];
+        for (int v = 0; v < src.VertexCount; v++) wpos[weld[v]] = src.Pos[v];
+        var edgeFaces = new Dictionary<long, (int a, int b)>(EdgeKeyComparer.Instance);
+        var fn = new Vector3[src.TriCount];
+        for (int t = 0; t < src.TriCount; t++)
+        {
+            fn[t] = src.TriNormal(t);
+            float l = fn[t].Length();
+            fn[t] = l > 1e-30f ? fn[t] / l : Vector3.Zero;
+            for (int k = 0; k < 3; k++)
+            {
+                int a = weld[src.Tris[3 * t + k]], b = weld[src.Tris[3 * t + (k + 1) % 3]];
+                if (a == b) continue;
+                long key = a < b ? ((long)a << 32) | (uint)b : ((long)b << 32) | (uint)a;
+                edgeFaces[key] = edgeFaces.TryGetValue(key, out var f) ? (f.a, t) : (t, -1);
+            }
+        }
+        var bvh = new Bvh(surface.Pos, surface.Tris);
+        float cosA = MathF.Cos(Mathf.DegToRad(angleDeg));
+        var dirs = new Dictionary<int, List<Vector3>>();
+        foreach (var (key, f) in edgeFaces)
+        {
+            if (f.b < 0 || fn[f.a] == Vector3.Zero || fn[f.b] == Vector3.Zero || fn[f.a].Dot(fn[f.b]) > cosA) continue;
+            int a = (int)(key >> 32), b = (int)(key & 0xffffffff);
+            var pa = wpos[a]; var pb = wpos[b];
+            float len = (pb - pa).Length();
+            int n = Math.Max(1, (int)MathF.Ceiling(len / step));
+            bool any = false;
+            for (int i = 0; i < n; i++)
+            {
+                var p = pa.Lerp(pb, (i + 0.5f) / n);
+                if (!bvh.Closest(p, onSurface, null, out _)) continue;
+                r.P.Add(p); r.Dir.Add((pb - pa) / MathF.Max(len, 1e-30f));
+                r.Length += len / n;
+                any = true;
+            }
+            if (!any) continue;
+            var dab = (pb - pa) / MathF.Max(len, 1e-30f);
+            if (!dirs.TryGetValue(a, out var la)) dirs[a] = la = new List<Vector3>();
+            if (!dirs.TryGetValue(b, out var lb)) dirs[b] = lb = new List<Vector3>();
+            la.Add(dab); lb.Add(-dab);
+        }
+        // corners: three or more sharp edges in three directions that aren't coplanar (not just a bent rim)
+        foreach (var (v, ds) in dirs)
+        {
+            if (ds.Count < 3) continue;
+            bool corner = false;
+            for (int i = 0; i < ds.Count && !corner; i++)
+                for (int j = i + 1; j < ds.Count && !corner; j++)
+                    for (int k = j + 1; k < ds.Count && !corner; k++)
+                        corner = MathF.Abs(ds[i].Dot(ds[j].Cross(ds[k]))) > 0.3f;
+            if (corner && bvh.Closest(wpos[v], onSurface, null, out _)) r.Corners.Add(wpos[v]);
+        }
+        return r;
+    }
+
+    /// <summary>
+    /// How well a remesh keeps the source's sharp edges (reported, not gated): distance from crease samples to the
+    /// remesh, the share of crease length that runs along a remesh edge (within 0.1 ρ and 15°), and the distance from
+    /// each source corner to the nearest remesh vertex. Distances in units of the quad spacing ρ.
+    /// </summary>
+    /// <summary>Optional: write crease samples not along a remesh edge to this OBJ (CLI --dump-crease-misses).</summary>
+    public static string DumpCreaseMisses;
+
+    public static void HardSurface(CheckList cl, Pipeline p)
+    {
+        if (p.Welded == null || p.BaseMesh == null || p.Grid == null) return;
+        var m = p.Welded;
+        float rho = p.Quad?.Rho ?? MathF.Sqrt((float)(Pipeline.Area(m) / Math.Max(1, m.TriCount / 2)));
+        var sc = FindSourceCreases(p.Source.Mesh, p.BaseMesh, 30, 0.25f * rho, 1.5f * p.Grid.H);
+        if (sc.P.Count == 0) { cl.Metric("hard surface: no sharp source edges"); return; }
+        var bvh = new Bvh(m.Pos, m.Tris);
+        var vt = new List<int>[m.VertexCount];
+        for (int i = 0; i < vt.Length; i++) vt[i] = new List<int>(6);
+        for (int t = 0; t < m.TriCount; t++) for (int k = 0; k < 3; k++) vt[m.Tris[3 * t + k]].Add(t);
+        int n = sc.P.Count, covered = 0;
+        var miss = DumpCreaseMisses != null ? new System.Text.StringBuilder() : null;
+        var dist = new float[n];
+        float cos15 = MathF.Cos(Mathf.DegToRad(15));
+        for (int i = 0; i < n; i++)
+        {
+            if (!bvh.Closest(sc.P[i], float.MaxValue, null, out var hit)) { dist[i] = float.MaxValue; continue; }
+            dist[i] = hit.Dist / rho;
+            bool ok = false;
+            for (int k = 0; k < 3 && !ok; k++)
+                foreach (int t in vt[m.Tris[3 * hit.Tri + k]])
+                {
+                    for (int e = 0; e < 3; e++)
+                    {
+                        var a = m.Pos[m.Tris[3 * t + e]]; var b = m.Pos[m.Tris[3 * t + (e + 1) % 3]];
+                        var ab = b - a;
+                        float l = ab.Length();
+                        if (l < 1e-12f) continue;
+                        if (MathF.Abs(ab.Dot(sc.Dir[i])) / l < cos15) continue;
+                        if (Geo.DistPointSegment(sc.P[i], a, b) < 0.1f * rho) { ok = true; break; }
+                    }
+                    if (ok) break;
+                }
+            if (ok) covered++;
+            else miss?.AppendLine(FormattableString.Invariant($"v {sc.P[i].X} {sc.P[i].Y} {sc.P[i].Z}"));
+        }
+        if (miss != null) System.IO.File.WriteAllText(DumpCreaseMisses, miss.ToString());
+        Array.Sort(dist);
+        float p50 = dist[n / 2], p95 = dist[Math.Min(n - 1, (int)(0.95 * n))];
+        var cd = new List<float>();
+        foreach (var c in sc.Corners)
+        {
+            float best = float.MaxValue;
+            foreach (var v in m.Pos) best = MathF.Min(best, (v - c).LengthSquared());
+            cd.Add(MathF.Sqrt(best) / rho);
+        }
+        cd.Sort();
+        string corners = cd.Count > 0 ? $", corners: {cd.Count}, nearest vertex median {cd[cd.Count / 2]:F2}ρ, max {cd[^1]:F2}ρ" : "";
+        cl.Metric($"hard surface: {sc.Length / p.Source.Mesh.Bounds().Size.Length():F1}× diagonal of sharp edges, distance to remesh median {p50:F3}ρ p95 {p95:F3}ρ, " +
+                  $"{covered / (float)n:P0} of edge length along a remesh edge{corners}");
+        if (p.Features == null) return;
+        // hard-surface mode: floors that catch the mechanism breaking (on the test models it gets 50–85% and 0–0.07ρ;
+        // organic remeshing 30–60% and 0.03–0.08ρ, corners 0.15–0.3ρ)
+        cl.Check(covered >= 0.45f * n, $"hard surface: at least 45% of sharp-edge length along a remesh edge ({covered / (float)n:P0})");
+        cl.Check(p50 <= 0.1f, $"hard surface: sharp edges kept, median distance to the remesh {p50:F3}ρ <= 0.1ρ");
+        if (cd.Count > 0) cl.Check(cd[cd.Count / 2] <= 0.1f, $"hard surface: corners kept, median distance to the nearest vertex {cd[cd.Count / 2]:F2}ρ <= 0.1ρ");
+    }
+
     public static void LimbSides(CheckList cl, Pipeline p)
     {
         if (p.Rig == null || p.WeldedBones == null || !IsHumanoid(p.Rig)) return;

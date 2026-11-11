@@ -13,6 +13,7 @@ public sealed class MeshData
     public float[] Tan;   // optional tangents, 4 floats per vertex (xyz, sign)
     public int[] Tris;
     public byte[] TriFlags; // optional per triangle: bit k set = edge (corner k → k+1) is a quad diagonal
+    public bool[] Hard;     // optional per half-edge (3 per triangle): a sharp edge; normals split across it
 
     public int VertexCount => Pos.Length;
     public int TriCount => Tris.Length / 3;
@@ -60,6 +61,84 @@ public sealed class MeshData
             n[i] = l > 1e-20f ? n[i] / l : Vector3.Up;
         }
         Nrm = n;
+    }
+
+    /// <summary>Marks edges whose two faces turn by more than the angle (quad diagonals never) as hard.</summary>
+    public int MarkHardEdges(float angleDeg)
+    {
+        int nt = TriCount, count = 0;
+        Hard = new bool[3 * nt];
+        float cosA = MathF.Cos(Mathf.DegToRad(angleDeg));
+        var fn = new Vector3[nt];
+        for (int t = 0; t < nt; t++) { var n = TriNormal(t); float l = n.Length(); fn[t] = l > 1e-30f ? n / l : Vector3.Zero; }
+        var owner = new Dictionary<long, int>(EdgeKeyComparer.Instance);
+        for (int t = 0; t < nt; t++)
+            for (int k = 0; k < 3; k++)
+            {
+                int a = Tris[3 * t + k], b = Tris[3 * t + (k + 1) % 3];
+                long key = a < b ? ((long)a << 32) | (uint)b : ((long)b << 32) | (uint)a;
+                if (!owner.TryGetValue(key, out int h)) { owner[key] = 3 * t + k; continue; }
+                int o = h / 3;
+                bool diagonal = TriFlags != null && ((TriFlags[t] & (1 << k)) != 0 || (TriFlags[o] & (1 << (h % 3))) != 0);
+                if (diagonal || fn[t] == Vector3.Zero || fn[o] == Vector3.Zero || fn[t].Dot(fn[o]) > cosA) continue;
+                Hard[3 * t + k] = Hard[h] = true;
+                count++;
+            }
+        return count;
+    }
+
+    /// <summary>
+    /// Per corner (3 per triangle): smoothing group id and its normal. Corners of a vertex share a group unless a
+    /// hard edge separates them; the normal is the angle-weighted mean of the group's faces. Without hard edges every
+    /// vertex is one group.
+    /// </summary>
+    public (int[] group, Vector3[] normal) CornerNormals()
+    {
+        int nt = TriCount;
+        var parent = new int[3 * nt];
+        for (int i = 0; i < parent.Length; i++) parent[i] = i;
+        int Find(int x) { while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
+        var owner = new Dictionary<long, int>(EdgeKeyComparer.Instance);
+        for (int t = 0; t < nt; t++)
+            for (int k = 0; k < 3; k++)
+            {
+                int a = Tris[3 * t + k], b = Tris[3 * t + (k + 1) % 3];
+                long key = a < b ? ((long)a << 32) | (uint)b : ((long)b << 32) | (uint)a;
+                if (!owner.TryGetValue(key, out int h)) { owner[key] = 3 * t + k; continue; }
+                if (Hard != null && (Hard[3 * t + k] || Hard[h])) continue;
+                int o = h / 3;
+                // join the corners of a and of b on both sides
+                for (int q = 0; q < 3; q++)
+                {
+                    int x = Tris[3 * o + q];
+                    if (x == a) { int r1 = Find(3 * t + k), r2 = Find(3 * o + q); if (r1 != r2) parent[r2] = r1; }
+                    if (x == b) { int r1 = Find(3 * t + (k + 1) % 3), r2 = Find(3 * o + q); if (r1 != r2) parent[r2] = r1; }
+                }
+            }
+        var group = new int[3 * nt];
+        var sum = new Dictionary<int, Vector3>();
+        for (int t = 0; t < nt; t++)
+        {
+            var n = TriNormal(t);
+            float l = n.Length();
+            if (l > 1e-30f) n /= l;
+            for (int k = 0; k < 3; k++)
+            {
+                var p = Pos[Tris[3 * t + k]];
+                var e1 = Pos[Tris[3 * t + (k + 1) % 3]] - p; var e2 = Pos[Tris[3 * t + (k + 2) % 3]] - p;
+                float ang = (e1.LengthSquared() > 0 && e2.LengthSquared() > 0) ? e1.AngleTo(e2) : 0;
+                int r = Find(3 * t + k);
+                group[3 * t + k] = r;
+                sum[r] = (sum.TryGetValue(r, out var s) ? s : Vector3.Zero) + n * ang;
+            }
+        }
+        var normal = new Vector3[3 * nt];
+        for (int c = 0; c < normal.Length; c++)
+        {
+            var s = sum[group[c]];
+            normal[c] = s.LengthSquared() > 1e-30f ? s.Normalized() : Vector3.Up;
+        }
+        return (group, normal);
     }
 
     /// <summary>Compressed-sparse-row vertex adjacency (unique neighbors).</summary>

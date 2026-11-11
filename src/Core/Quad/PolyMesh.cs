@@ -13,6 +13,7 @@ public sealed class PolyMesh
     public Vector3[] Pos;
     public Vector3[] Nrm;   // optional
     public List<int[]> Faces = new();
+    public Dictionary<Vector3, Extraction.Lock> Locks;   // hard surface: vertices placed on corners and sharp edges
 
     /// <summary>Newell normal of a polygon (length ~ 2·area).</summary>
     public Vector3 FaceNormal(int[] f)

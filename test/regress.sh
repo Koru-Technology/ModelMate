@@ -2,7 +2,7 @@
 # Runs the CLI pipeline (with verification) over the procedural test models. Exit 1 if any case fails.
 cd "${0:A:h}/.."
 G=${GODOT:-/Applications/Godot.app/Contents/MacOS/Godot}
-[[ -f test/humanoid.glb ]] || $G --headless --path . -- --make-test-asset res://test --dense >/dev/null 2>&1
+[[ -f test/humanoid.glb && -f test/hs_gadget.glb ]] || $G --headless --path . -- --make-test-asset res://test --dense --hard >/dev/null 2>&1
 fail=0
 run() {
   local out rc
@@ -27,6 +27,10 @@ run --in res://test/humanoid_open.glb --out res://test/out_reg.glb --retopo voxe
 [[ -f test/lil_gug2.glb ]] && run --in res://test/lil_gug2.glb --out res://test/out_reg.glb --tris 2000 --rig res://test/rigs/lil_gug.json   # Nomad export with lights + floor
 run --in res://test/humanoid.glb --out res://test/out_reg.glb --rig single
 run --in res://test/humanoid.glb --out res://test/out_reg.glb --rig none --tris 2000   # static mesh: no skeleton
+for f in hs_gadget hs_building hs_handheld; do                                     # hard surface (see Verify.HardSurface)
+  run --in res://test/$f.glb --out res://test/out_reg.glb --rig none --surface hard --tris 2000
+  run --in res://test/$f.glb --out res://test/out_reg.glb --rig none --surface hard --tris 8000
+done
 run --in res://test/humanoid.glb --out res://test/out_reg.glb --retopo voxel --tris 8000
 run --in res://test/humanoid_open.glb --out res://test/out_reg.glb --retopo voxel --voxel 128 --tris 3000
 rm -f test/out_reg.glb test/out_q.glb

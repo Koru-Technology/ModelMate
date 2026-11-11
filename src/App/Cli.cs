@@ -31,6 +31,7 @@ public static class Cli
             {
                 TestAsset.Write(ProjectSettings.GlobalizePath(dir));
                 if (a.ContainsKey("dense")) TestAsset.WriteDense(ProjectSettings.GlobalizePath(dir));
+                if (a.ContainsKey("hard")) TestAsset.WriteHardSurface(ProjectSettings.GlobalizePath(dir));
                 GD.Print($"Wrote test assets to {dir}");
                 return 0;
             }
@@ -55,6 +56,10 @@ public static class Cli
             if (a.TryGetValue("sizing-grad", out v)) p.S.SizingGradient = float.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
             if (a.TryGetValue("sizing-ratio", out v)) p.S.SizingMaxRatio = float.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
             if (a.TryGetValue("sizing", out v)) p.S.Sizing = v;
+            if (a.TryGetValue("surface", out v)) p.S.Surface = v;
+            if (a.TryGetValue("min-feature", out v)) Pipeline.MinFeatureFraction = float.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
+            if (a.TryGetValue("dump-crease-misses", out v)) Verify.DumpCreaseMisses = ProjectSettings.GlobalizePath(v);
+            if (a.TryGetValue("crease", out v)) p.S.CreaseAngle = float.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
             if (a.ContainsKey("no-fit")) ModelMate.Core.Quad.QuadRetopo.FitToSurface = false;
             if (a.ContainsKey("no-pin")) ModelMate.Core.Quad.QuadRetopo.PinTips = false;
             if (a.TryGetValue("unwrap", out v)) UvUnwrap.Mode = v;
@@ -80,6 +85,27 @@ public static class Cli
                 return DeformReport.Run(p, ProjectSettings.GlobalizePath(rd), budgets, modes, s => GD.Print(s));
             }
             p.Retopo();
+            if (a.TryGetValue("dump-features", out var df) && p.Features != null)
+            {
+                // sharp edges as line segments between neighbouring ridge/corner vertices (sharpened positions)
+                var f = p.Features; var bm = p.BaseMesh;
+                var sb = new System.Text.StringBuilder();
+                var ids = new Dictionary<int, int>();
+                for (int i = 0; i < bm.VertexCount; i++)
+                    if (f.Kind[i] >= ModelMate.Core.Quad.Features.Ridge)
+                    {
+                        ids[i] = ids.Count + 1;
+                        var q = f.Point[i];
+                        sb.AppendLine(System.FormattableString.Invariant($"v {q.X} {q.Y} {q.Z}{(f.Kind[i] == ModelMate.Core.Quad.Features.Corner ? " 1 0 0" : " 0 0 1")}"));
+                    }
+                var (st, nb) = bm.BuildAdjacency();
+                for (int i = 0; i < bm.VertexCount; i++)
+                    if (ids.TryGetValue(i, out int a0))
+                        for (int k = st[i]; k < st[i + 1]; k++)
+                            if (nb[k] > i && ids.TryGetValue(nb[k], out int b0)) sb.AppendLine($"l {a0} {b0}");
+                System.IO.File.WriteAllText(ProjectSettings.GlobalizePath(df), sb.ToString());
+                GD.Print($"Wrote features to {df}");
+            }
             if (a.TryGetValue("dump-quads", out var dq) && p.Welded?.TriFlags != null)
             {
                 ModelMate.Core.Quad.PolyMesh.FromTriangles(p.Welded).WriteObj(ProjectSettings.GlobalizePath(dq));
@@ -99,6 +125,7 @@ public static class Cli
             ChartUnwrap.CheckLayout(cl, $"UV layout ({UvUnwrap.LastUsed})", p.Split, p.S.TexSize, UvUnwrap.LastUsed != "xatlas");
             Verify.QuadMesh(cl, p);
             Verify.LimbSides(cl, p);
+            Verify.HardSurface(cl, p);
 
             var name = System.IO.Path.GetFileNameWithoutExtension(output);
             var root = p.BuildScene(name);

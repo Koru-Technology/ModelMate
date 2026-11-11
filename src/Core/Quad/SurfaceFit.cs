@@ -18,7 +18,8 @@ public static class SurfaceFit
 {
     public struct Stats { public int Passes; public float MeanShift, MaxShift; public int Reverted; }
 
-    public static Stats Fit(MeshData m, MeshData dense, int passes = 4, float damping = 0.8f, float maxShiftFrac = 0.3f)
+    /// <param name="locked">optional: vertices that stay where they are (hard-surface corners and sharp edges)</param>
+    public static Stats Fit(MeshData m, MeshData dense, int passes = 4, float damping = 0.8f, float maxShiftFrac = 0.3f, bool[] locked = null)
     {
         var st = new Stats { Passes = passes };
         int nv = m.VertexCount;
@@ -63,7 +64,7 @@ public static class SurfaceFit
             var old = (Vector3[])m.Pos.Clone();
             for (int v = 0; v < nv; v++)
             {
-                if (den[v] <= 0) continue;
+                if (den[v] <= 0 || (locked != null && locked[v])) continue;
                 float d = damping * (float)(num[v] / den[v]);
                 var np = m.Pos[v] + m.Nrm[v] * d;
                 // cap the total displacement from the starting (on-surface) position

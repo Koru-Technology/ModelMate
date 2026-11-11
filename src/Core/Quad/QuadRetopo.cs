@@ -17,6 +17,9 @@ public sealed class QuadResult
     public int OrientationSingularities;
     public float[] Sizing;           // per base vertex target edge length (null = uniform Rho)
     public int Tips;                 // sharp tips pinned
+    public int Locked;               // hard surface: output vertices held on corners and sharp edges
+    public int CreaseSplits;         // hard surface: quads split along a sharp edge
+    public Extraction.Lock?[] Locks; // per output vertex (hard surface), or null
     public string Failure;           // null when the result passes the structural gates
 }
 
@@ -85,8 +88,67 @@ public static class QuadRetopo
     /// <summary>Pin a lattice point onto each detected sharp tip (horn tips, noses) so they aren't cut short.</summary>
     public static bool PinTips = true;
 
+    /// <param name="features">hard-surface mode: sharp edges and corners the field aligns to and the extraction keeps</param>
+    /// <summary>
+    /// A quad whose two opposite corners both sit on the same sharp edge must bend along that diagonal: split it
+    /// there (two triangles, the crease a real edge), whichever diagonal the triangulation picked.
+    /// </summary>
+    static int SplitAlongCreases(MeshData m, Extraction.Lock?[] locks, float rho)
+    {
+        if (m.TriFlags == null) return 0;
+        bool OnSameEdge(int a, int b)
+        {
+            if (locks[a] is not Extraction.Lock la || locks[b] is not Extraction.Lock lb) return false;
+            var ab = m.Pos[b] - m.Pos[a];
+            float l = ab.Length();
+            if (l < 1e-12f) return false;
+            ab /= l;
+            // each end on a sharp edge (or a corner) and the diagonal along that edge's direction
+            bool alongA = la.Dir == Vector3.Zero || MathF.Abs(ab.Dot(la.Dir)) > 0.9f;
+            bool alongB = lb.Dir == Vector3.Zero || MathF.Abs(ab.Dot(lb.Dir)) > 0.9f;
+            return alongA && alongB && !(la.Dir == Vector3.Zero && lb.Dir == Vector3.Zero);
+        }
+        var owner = new Dictionary<long, int>(EdgeKeyComparer.Instance);
+        int nt = m.TriCount, splits = 0;
+        var edges = new HashSet<long>(EdgeKeyComparer.Instance);
+        long Key(int x, int y) => x < y ? ((long)x << 32) | (uint)y : ((long)y << 32) | (uint)x;
+        for (int t = 0; t < nt; t++)
+            for (int k = 0; k < 3; k++) edges.Add(Key(m.Tris[3 * t + k], m.Tris[3 * t + (k + 1) % 3]));
+        for (int t = 0; t < nt; t++)
+            for (int k = 0; k < 3; k++)
+            {
+                if ((m.TriFlags[t] & (1 << k)) == 0) continue;
+                int a = m.Tris[3 * t + k], b = m.Tris[3 * t + (k + 1) % 3];
+                long key = a < b ? ((long)a << 32) | (uint)b : ((long)b << 32) | (uint)a;
+                if (!owner.TryGetValue(key, out int t1)) { owner[key] = t; continue; }
+                // t1 and t form a quad split along a–b; c and d are the other two corners
+                int c = -1, d = -1;
+                for (int q = 0; q < 3; q++) { int x = m.Tris[3 * t1 + q]; if (x != a && x != b) c = x; }
+                for (int q = 0; q < 3; q++) { int x = m.Tris[3 * t + q]; if (x != a && x != b) d = x; }
+                if (c < 0 || d < 0) continue;
+                if (OnSameEdge(a, b))
+                {
+                    // the crease already runs along the split: make it a real edge
+                    m.TriFlags[t] = 0; m.TriFlags[t1] = 0; splits++;
+                }
+                else if (OnSameEdge(c, d) && !edges.Contains(Key(c, d)))   // an existing c–d edge would become non-manifold
+                {
+                    // re-split along c–d, keeping the winding: quad loop is the union of both triangles' edges
+                    int[] T1 = { m.Tris[3 * t1], m.Tris[3 * t1 + 1], m.Tris[3 * t1 + 2] };
+                    // rotate T1 so it reads (u, v, c) with u→v the shared edge in t1's orientation
+                    while (T1[2] != c) (T1[0], T1[1], T1[2]) = (T1[1], T1[2], T1[0]);
+                    int u = T1[0], v = T1[1];   // t1 = (u, v, c); t = (v, u, d)
+                    m.Tris[3 * t1] = u; m.Tris[3 * t1 + 1] = d; m.Tris[3 * t1 + 2] = c;
+                    m.Tris[3 * t] = d; m.Tris[3 * t + 1] = v; m.Tris[3 * t + 2] = c;
+                    m.TriFlags[t] = 0; m.TriFlags[t1] = 0; splits++;
+                    edges.Remove(key); edges.Add(Key(c, d));
+                }
+            }
+        return splits;
+    }
+
     public static QuadResult Run(MeshData baseMesh, Bvh source, float rho, Vector3[] guideDir, float[] guideW,
-        int seed, Action<string> log, float[] sizing = null, List<int> tips = null)
+        int seed, Action<string> log, float[] sizing = null, List<int> tips = null, Features features = null)
     {
         var r = new QuadResult { Rho = rho, Sizing = sizing };
         var sw = Stopwatch.StartNew();
@@ -123,6 +185,28 @@ public static class QuadRetopo
             }
             h.PropagateConstraints();
         }
+        if (features != null)
+        {
+            // edges: the field runs along them (orientation) and a lattice line lies on them (line constraint);
+            // corners: a lattice point sits on them (point constraint, like the tips)
+            var f0 = h.Fine;
+            f0.CO ??= new Vector3[f0.Count]; f0.COw ??= new float[f0.Count]; f0.CD ??= new Vector3[f0.Count];
+            for (int i = 0; i < f0.Count; i++)
+            {
+                byte k = features.Kind[i];
+                if (k == Features.Band || k == Features.Ridge)
+                {
+                    var n = f0.N[i];
+                    var d = features.Dir[i] - n * n.Dot(features.Dir[i]);
+                    if (d.LengthSquared() > 1e-12f) { f0.CQ[i] = d.Normalized(); f0.CQw[i] = 1; }
+                }
+                if (k == Features.Ridge) { f0.CO[i] = features.Point[i]; f0.COw[i] = 1; f0.CD[i] = features.Dir[i]; }
+                else if (k == Features.Corner) { f0.CO[i] = features.Point[i]; f0.COw[i] = 1; f0.CD[i] = Vector3.Zero; }
+            }
+            h.PropagateConstraints();
+            h.PropagatePositionConstraints();
+            f0.Features = features;
+        }
         FieldSolver.SolveOrientations(h);
         r.OrientationSingularities = OrientationSingularities(baseMesh, h.Fine);
         T($"orientation field ({r.OrientationSingularities} singularities)");
@@ -144,18 +228,30 @@ public static class QuadRetopo
             r.Cleanup.BadEdgesAfter = c2.BadEdgesAfter;
         }
         m.ComputeNormals();
+        Extraction.Lock?[] locks = null;
+        bool[] locked = null;
+        if (pm.Locks != null && pm.Locks.Count > 0)
+        {
+            locks = new Extraction.Lock?[m.VertexCount];
+            locked = new bool[m.VertexCount];
+            for (int v = 0; v < m.VertexCount; v++)
+                if (pm.Locks.TryGetValue(m.Pos[v], out var lk)) { locks[v] = lk; locked[v] = true; r.Locked++; }
+        }
+        r.Locks = locks;
+        if (locks != null) r.CreaseSplits = SplitAlongCreases(m, locks, rho);
         float snap = rho;
         if (sizing != null) foreach (var x in sizing) snap = MathF.Max(snap, x);
-        r.Reproject = Relax.Run(m, source, snap, 3, 0.1f, QuadStats.RealAdjacency(m));
+        r.Reproject = Relax.Run(m, source, snap, 3, 0.1f, QuadStats.RealAdjacency(m), locks);
         T("cleanup+reproject");
         if (FitToSurface)
         {
-            var fs = SurfaceFit.Fit(m, baseMesh);
+            var fs = SurfaceFit.Fit(m, baseMesh, locked: locked);
             T($"surface fit (mean shift {fs.MeanShift:0.#####}, max {fs.MaxShift:0.#####}, reverted {fs.Reverted})");
         }
         r.Mesh = m;
         r.Stats = QuadStats.Compute(m);
         log?.Invoke($"  Quad mesh: {r.Stats}");
+        if (r.Locks != null) log?.Invoke($"  Hard surface: {r.Locked} vertices held on corners and sharp edges, {r.CreaseSplits} quads split along a sharp edge");
 
         if (r.Cleanup.BadEdgesAfter > 0 || r.Stats.BoundaryEdges > 0)
             r.Failure = $"not closed/manifold (bad edges {r.Cleanup.BadEdgesAfter}, boundary {r.Stats.BoundaryEdges}, holes skipped {r.Holes.skipped})";

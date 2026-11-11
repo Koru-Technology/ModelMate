@@ -63,6 +63,7 @@ void fragment() {
         var bo = bones != null ? new int[4 * nc] : null;
         var we = bones != null ? new float[4 * nc] : null;
         if (m.Nrm == null) m.ComputeNormals();
+        Vector3[] cornerN = m.Hard != null ? m.CornerNormals().normal : null;   // hard surface: sharp shading at hard edges
         Span<Vector3> bc = stackalloc Vector3[3];
         for (int t = 0; t < nt; t++)
         {
@@ -82,7 +83,7 @@ void fragment() {
                 int v = m.Tris[3 * t + k];
                 int o = 3 * t + j;
                 pos[o] = m.Pos[v];
-                nrm[o] = m.Nrm[v];
+                nrm[o] = cornerN != null ? cornerN[3 * t + k] : m.Nrm[v];
                 col[o] = vertexColor != null ? vertexColor[v] : Grey;
                 uv[o] = new Vector2(bc[k].X, bc[k].Y);
                 uv2[o] = new Vector2(bc[k].Z, 0);

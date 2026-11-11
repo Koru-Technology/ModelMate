@@ -286,24 +286,33 @@ public static class ChartUnwrap
         var uv = new List<Vector2>();
         var origin = new List<int>();
         var outTris = new int[3 * nt];
+        // hard edges: one output vertex per chart vertex and smoothing group, with that group's normal
+        int[] cg = null; Vector3[] cnrm = null;
+        if (m.Hard != null) (cg, cnrm) = m.CornerNormals();
         for (int c = 0; c < nc; c++)
         {
             var ch = flat[c];
             float ca = MathF.Cos(place[c].Angle), sa = MathF.Sin(place[c].Angle);
-            var splitOf = new int[ch.Verts.Length];
-            for (int l = 0; l < splitOf.Length; l++)
-            {
-                int v = ch.Verts[l];
-                splitOf[l] = pos.Count;
-                pos.Add(m.Pos[v]);
-                nrm.Add(m.Nrm != null ? m.Nrm[v] : Vector3.Up);
-                var p = ch.Uv[l];
-                var q = new Vector2(ca * p.X - sa * p.Y, sa * p.X + ca * p.Y) * s + place[c].Offset;
-                uv.Add(q / texSize);
-                origin.Add(v);
-            }
+            var made = new Dictionary<(int l, int g), int>();
             for (int i = 0; i < ch.Tris.Count; i++)
-                for (int k = 0; k < 3; k++) outTris[3 * ch.Tris[i] + k] = splitOf[ch.TriLocal[3 * i + k]];
+                for (int k = 0; k < 3; k++)
+                {
+                    int corner = 3 * ch.Tris[i] + k, l = ch.TriLocal[3 * i + k];
+                    var key = (l, cg != null ? cg[corner] : 0);
+                    if (!made.TryGetValue(key, out int idx))
+                    {
+                        int v = ch.Verts[l];
+                        idx = pos.Count;
+                        made[key] = idx;
+                        pos.Add(m.Pos[v]);
+                        nrm.Add(cnrm != null ? cnrm[corner] : m.Nrm != null ? m.Nrm[v] : Vector3.Up);
+                        var p = ch.Uv[l];
+                        var q = new Vector2(ca * p.X - sa * p.Y, sa * p.X + ca * p.Y) * s + place[c].Offset;
+                        uv.Add(q / texSize);
+                        origin.Add(v);
+                    }
+                    outTris[corner] = idx;
+                }
         }
         var split = new MeshData(pos.ToArray(), outTris) { Nrm = nrm.ToArray(), Uv = uv.ToArray() };
 
@@ -357,6 +366,19 @@ public static class ChartUnwrap
         return (split, origin.ToArray(), info);
     }
 
+    /// <summary>Unites split vertices with the same position and UV (copies made only for split normals).</summary>
+    static void UniteSameSpot(MeshData split, int[] parent, Func<int, int> find)
+    {
+        var first = new Dictionary<(Vector3, Vector2), int>();
+        for (int v = 0; v < split.VertexCount; v++)
+        {
+            var key = (split.Pos[v], split.Uv[v]);
+            if (!first.TryGetValue(key, out int f)) { first[key] = v; continue; }
+            int a = find(f), b = find(v);
+            if (a != b) parent[b] = a;
+        }
+    }
+
     /// <summary>Writes the layout as a PNG: each chart in its own colour, seams dark.</summary>
     public static void DumpLayout(MeshData split, int size, string path)
     {
@@ -366,6 +388,7 @@ public static class ChartUnwrap
         int Find(int x) { while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
         for (int t = 0; t < nt; t++)
             for (int k = 1; k < 3; k++) { int a = Find(split.Tris[3 * t]), b = Find(split.Tris[3 * t + k]); if (a != b) parent[b] = a; }
+        UniteSameSpot(split, parent, Find);
         var px = new byte[size * size * 3];
         Array.Fill(px, (byte)255);
         for (int t = 0; t < nt; t++)
@@ -629,6 +652,8 @@ public static class ChartUnwrap
             int a = Find(split.Tris[3 * t]);
             for (int k = 1; k < 3; k++) { int b = Find(split.Tris[3 * t + k]); if (a != b) parent[b] = a; }
         }
+        // copies of a vertex split only for its normals (hard edges) share position and UV: same chart
+        UniteSameSpot(split, parent, Find);
         var chartId = new int[nt];
         var chartSign = new Dictionary<int, double>();
         var uvA = new float[nt];
@@ -719,17 +744,21 @@ public static class ChartUnwrap
         }
         // xatlas layouts (editor builds) are reported, not gated: it occasionally packs a few texels of overlap
         else cl.Metric($"{label}: {overlap} texels claimed twice, {touching} texels touching another chart, area stretch p95 {p95:F2}");
-        // seams: split-mesh edges used by one triangle only (each seam has two such sides); shape distortion
-        var edgeUse = new Dictionary<long, int>(EdgeKeyComparer.Instance);
+        // seams: edges whose two sides have different UVs (each seam has two such sides; copies made only for split
+        // normals keep their UVs and don't count); shape distortion
+        var edgeUse = new Dictionary<(Vector3, Vector2, Vector3, Vector2), int>();
         for (int t = 0; t < nt; t++)
             for (int k = 0; k < 3; k++)
             {
-                long key = Key(split.Tris[3 * t + k], split.Tris[3 * t + (k + 1) % 3]);
+                int a = split.Tris[3 * t + k], b = split.Tris[3 * t + (k + 1) % 3];
+                var ka = (split.Pos[a], split.Uv[a]); var kb = (split.Pos[b], split.Uv[b]);
+                bool swap = ka.Item1.X < kb.Item1.X || (ka.Item1.X == kb.Item1.X && (ka.Item1.Y < kb.Item1.Y || (ka.Item1.Y == kb.Item1.Y && ka.Item1.Z < kb.Item1.Z)));
+                var key = swap ? (ka.Item1, ka.Item2, kb.Item1, kb.Item2) : (kb.Item1, kb.Item2, ka.Item1, ka.Item2);
                 edgeUse[key] = edgeUse.TryGetValue(key, out int u) ? u + 1 : 1;
             }
         double seam = 0;
         foreach (var (key, use) in edgeUse)
-            if (use == 1) seam += (split.Pos[(int)(key >> 32)] - split.Pos[(int)(key & 0xffffffff)]).Length();
+            if (use == 1) seam += (key.Item1 - key.Item3).Length();
         var geo = new TriGeom(split);
         var an = new List<(float v, float w)>();
         for (int t = 0; t < nt; t++)

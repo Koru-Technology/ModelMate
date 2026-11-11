@@ -18,10 +18,11 @@ public static class Extraction
 {
     public struct Report
     {
-        public int Collapsed, Conflicts, Spurious, Snapped, EdgesRemoved, Faces, Holes, HolesSkipped;
+        public int Collapsed, Conflicts, Spurious, Snapped, EdgesRemoved, Faces, Holes, HolesSkipped, OnCorners, OnEdges;
         public override string ToString() =>
             $"collapsed={Collapsed} conflicts={Conflicts} spuriousRemoved={Spurious} snapped={Snapped} " +
-            $"edgesRemoved={EdgesRemoved} faces={Faces} holesFilled={Holes} holesSkipped={HolesSkipped}";
+            $"edgesRemoved={EdgesRemoved} faces={Faces} holesFilled={Holes} holesSkipped={HolesSkipped}" +
+            (OnCorners + OnEdges > 0 ? $" onCorners={OnCorners} onEdges={OnEdges}" : "");
     }
 
     sealed class DisjointSets
@@ -43,17 +44,23 @@ public static class Extraction
         }
     }
 
+    /// <summary>A vertex placed on a feature: corners stay put, edge vertices stay on their line (Dir ≠ 0).</summary>
+    public struct Lock { public Vector3 Point, Dir; }
+
     public static PolyMesh Extract(Hierarchy h, out Report rep)
     {
         rep = default;
-        var (adj, O, N) = ExtractGraph(h, ref rep);
-        return ExtractFaces(adj, O, N, ref rep);
+        var (adj, O, N) = ExtractGraph(h, ref rep, out var locks);
+        var pm = ExtractFaces(adj, O, N, ref rep);
+        pm.Locks = locks;
+        return pm;
     }
 
     // ---------------------------------------------------------------- extract_graph
 
-    static (List<int>[] adj, Vector3[] O, Vector3[] N) ExtractGraph(Hierarchy h, ref Report rep)
+    static (List<int>[] adj, Vector3[] O, Vector3[] N) ExtractGraph(Hierarchy h, ref Report rep, out Dictionary<Vector3, Lock> locks)
     {
+        locks = null;
         var l = h.Fine;
         int n = l.Count;
         var S = l.S;   // per-vertex target edge length
@@ -166,8 +173,46 @@ public static class Extraction
             N[i] = N[i].Normalized();
         }
 
+        // Step 4b (hard surface): a vertex whose cluster holds a corner goes to that corner; one that holds a sharp
+        // edge goes onto that edge (its line through the nearest edge sample). Averaging would cut corners.
+        var feat = l.Features;
+        int[] fCorner = null, fRidge = null;
+        if (feat != null)
+        {
+            fCorner = new int[nv]; fRidge = new int[nv];
+            Array.Fill(fCorner, -1); Array.Fill(fRidge, -1);
+            var dc = new float[nv]; var dr = new float[nv];
+            Array.Fill(dc, float.MaxValue); Array.Fill(dr, float.MaxValue);
+            for (int i = 0; i < n; i++)
+            {
+                byte k = feat.Kind[i];
+                if (k != Features.Corner && k != Features.Ridge) continue;
+                if (!vmap.TryGetValue(dset.Find(i), out int j)) continue;
+                float d = (feat.Point[i] - O[j]).LengthSquared();
+                if (k == Features.Corner && d < dc[j]) { dc[j] = d; fCorner[j] = i; }
+                if (k == Features.Ridge && d < dr[j]) { dr[j] = d; fRidge[j] = i; }
+            }
+            SnapToFeatures(O, cs, feat, fCorner, fRidge, ref rep);
+        }
+
         // Step 5: snap vertices onto nearby edges / remove unnecessary diagonal edges
         RemoveUnnecessaryEdges(adj, O, N, cs, ref rep);
+        if (feat != null)
+        {
+            SnapToFeatures(O, cs, feat, fCorner, fRidge, ref rep);
+            // positions are exact until smoothing, so later stages find the locked vertices by position
+            locks = new Dictionary<Vector3, Lock>();
+            for (int j = 0; j < nv; j++)
+            {
+                if (adj[j].Count == 0) continue;
+                if (fCorner[j] >= 0 && O[j] == feat.Point[fCorner[j]]) locks[O[j]] = new Lock { Point = O[j] };
+                else if (fRidge[j] >= 0)
+                {
+                    var c = feat.Point[fRidge[j]]; var d = feat.Dir[fRidge[j]];
+                    if ((c + d * d.Dot(O[j] - c) - O[j]).LengthSquared() < 1e-12f) locks[O[j]] = new Lock { Point = c, Dir = d };
+                }
+            }
+        }
 
         // Step 6: orient edges (sort neighbors by angle in the tangent plane, descending)
         for (int i = 0; i < nv; i++)
@@ -182,6 +227,27 @@ public static class Extraction
             });
         }
         return (adj, O, N);
+    }
+
+    static void SnapToFeatures(Vector3[] O, float[] cs, Features feat, int[] fCorner, int[] fRidge, ref Report rep)
+    {
+        int corners = 0, edges = 0;
+        for (int j = 0; j < O.Length; j++)
+        {
+            if (fCorner[j] >= 0 && (feat.Point[fCorner[j]] - O[j]).Length() < 0.75f * cs[j])
+            {
+                O[j] = feat.Point[fCorner[j]];
+                corners++;
+            }
+            else if (fRidge[j] >= 0)
+            {
+                var c = feat.Point[fRidge[j]]; var d = feat.Dir[fRidge[j]];
+                var q = c + d * d.Dot(O[j] - c);
+                if ((q - O[j]).Length() < 0.75f * cs[j]) { O[j] = q; edges++; }
+            }
+        }
+        rep.OnCorners = corners;
+        rep.OnEdges = edges;
     }
 
     static float Height(Vector3 pi, Vector3 pj, Vector3 pk)

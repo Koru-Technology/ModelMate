@@ -13,6 +13,7 @@
 **Algorithms implemented from publications (no code copied)**
 - **Surface Nets**: S. Gibson, *Constrained Elastic Surface Nets*, MICCAI 1998. Used in the voxel remesher (`SurfaceNets.cs`).
 - **Quadric error metrics**: M. Garland and P. Heckbert, *Surface Simplification Using Quadric Error Metrics*, SIGGRAPH 1997. Used for decimation (`QemDecimator.cs`).
+- **Normal voting tensor** (sharp edges and corners at a chosen scale): D. L. Page, Y. Sun, A. F. Koschan, J. Paik and M. A. Abidi, *Normal Vector Voting: Crease Detection and Curvature Estimation on Large, Noisy Meshes*, Graphical Models 2002. Used by the hard-surface mode (`Quad/Features.cs`); the edges then constrain the Instant Meshes fields, as its own crease handling does.
 - **Geodesic voxel skinning**: the idea of measuring bone distance through the voxelized interior comes from O. Dionne and M. de Lasa, *Geodesic Voxel Binding for Production Character Meshes*, SCA 2013. `VoxelGeodesicWeights.cs` is a simplified variant (Dijkstra over interior voxels with an inverse-distance falloff), not their full method.
 - **Closest point on a triangle**: C. Ericson, *Real-Time Collision Detection*, 2004 (`Geo.ClosestPtTri`).
 - **Rotating calipers** (minimum-area bounding rectangle): G. Toussaint, *Solving Geometric Problems with the Rotating Calipers*, 1983. **Skyline bin packing**: J. Jylänki, *A Thousand Ways to Pack the Bin*, 2010. Both are used by the chart unwrapper (`ChartUnwrap.cs`, `Uv/AtlasPack.cs`, which packs by each chart's outline rather than its rectangle).
@@ -49,7 +50,7 @@ $G --path .                      # UI
 
 **UI workflow**:
 1. Before anything is loaded the window shows one button, **Import Mesh** (tick *Model faces −Z* first if it does). Afterwards, the toolbar in the top-left corner has Import, Retopology, Export, the **Show** menu (source, retopologized mesh, wireframe, skeleton), **Settings** (faces −Z, UV padding for the texture size you will paint at) and the Console. The top right of the view has **Frame** and an orientation cube: drag it to turn the view, or tap a face to view from that side (Front is +Z, Left is the character's left, +X). A dimmed overlay names the step while one runs.
-2. **Retopology** opens by itself after every import (drag it by its title; the toolbar reopens it). Pick a mode and a **target triangle count**, then **Retopologize**. Quad mode is the default. In voxel mode the voxel resolution sets the detail and the result is decimated to the target.
+2. **Retopology** opens by itself after every import (drag it by its title; the toolbar reopens it). Pick a mode and a **target triangle count**, then **Retopologize**. Quad mode is the default. In voxel mode the voxel resolution sets the detail and the result is decimated to the target. Set **Surface** to *Hard surface* for buildings, gadgets and props: sharp edges and corners are kept, edge loops run along them, and they shade sharp (see *Hard surface* below).
 3. **Export** works from here on. Without a skeleton the export is a static mesh with UVs.
 4. Optional, in the side panel (each section collapses, and remembers it): **Skeleton & weights**. Pick a rig preset and click **Fit skeleton**, then left-drag joints to adjust them (left/right edits mirror by default). Edit the skeleton with **Add child**, **Delete**, **Rename**, **Parent**, **Deforms mesh** and **Symmetrize** (copies every `Left*` bone onto its `Right*` partner). **Save** stores it as a preset you can reuse on other models; **Load preset…** fits a preset `.json` from anywhere. **Compute weights** (Export does it too when a skeleton is fitted), and tick *Show selected bone's weights* for a heatmap, choosing the bone in the list or by clicking a joint.
 5. Optional: **Preview pose** with the rotation sliders or **Test pose** (humanoid: a standard bend; rigs from a preset with named poses, such as `blob_biped`: each press shows the next pose). Use **Reset pose** before editing joints again.
@@ -65,7 +66,8 @@ $G --headless --path . -- --in model.glb --out model_rigged.glb \
    [--no-fit] [--no-pin] [--dump-quads layout.obj] [--seed 1] \
    [--voxel 256] [--close 1] [--tex 1024] [--relax 4] [--falloff 3] \
    [--rig humanoid|single|blob_biped|preset.json|none] [--save-rig out.json] \
-   [--rotate-y 180] [--no-joint-aware] [--probe-weights] [--unwrap charts|cone|xatlas] [--dump-uv uv.png] [--uv-debug]
+   [--rotate-y 180] [--no-joint-aware] [--probe-weights] [--unwrap charts|cone|xatlas] [--dump-uv uv.png] [--uv-debug] \
+   [--surface organic|hard] [--crease 30] [--dump-features edges.obj] [--dump-crease-misses misses.obj]
 $G --headless --path . -- --in model.glb --rig humanoid --deform-report <dir> [--budgets 1000,2000] [--modes quad,quadflow,voxel]
 $G --headless --path . -- --selftest-fields                      # quad remesher + rig editing self-tests
 $G --headless --path . -- --make-test-asset res://test [--dense] # procedural test humanoids (T-pose, open, A-pose, ~3.8M-tri dense)
@@ -141,6 +143,7 @@ JSON presets (`rigs/*.json` built in, user presets in Godot's `user://rigs`) sto
 |---|---|
 | Inside test | `VoxelGrid`: a narrow-band distance field. A point counts as inside if either test says so: a flood fill that first seals gaps (dilate, fill, erode), or a ray-crossing vote along X, Y and Z. This handles holes, overlapping parts and inverted normals. |
 | Base mesh | `SurfaceNets`, then `MeshCleanup` (splits non-manifold edges and vertices), then `Relax` (smoothing along the surface plus guarded snapping to the source). This closed, evenly dense surface feeds both remesh modes and the weights. |
+| Hard surface (`--surface hard`) | `Quad/Features.cs` finds sharp edges and corners on the base mesh; quad remeshing aligns to them, puts vertices exactly on them and keeps them there; hard edges split normals and attract UV seams. See *Hard surface* below. |
 | Quad remesh (default) | `Quad/`: Instant Meshes port. A multiresolution hierarchy, a 4-RoSy orientation field and a 4-PoSy position field solved coarse to fine, then graph and face extraction, triangulation along each quad's shorter diagonal, hole filling and quad-preserving reprojection. If the result isn't closed and manifold or is under 70% quads, it falls back to voxel mode and the export checks fail, so a fallback is never silent. |
 | Voxel remesh | The base mesh decimated by `QemDecimator`: quadric-error edge collapse with manifold and flip guards, up to 6× more detail kept near joints, and an edge-length cap. |
 | Skeleton | `RigPreset` fits a preset to the bounding box (`HumanoidTemplate` for the humanoid), then centers joints inside the mesh by casting rays through it. `RigEdit` does the structural edits and keeps the skeleton valid (one root, parents before children, unique names, no cycles). Each bone's +Y points at its child. |
@@ -169,6 +172,26 @@ Measured against `--unwrap cone` (the unwrapper before merging):
 | Humanoid test model, 8k | 110 → 14 | 20 → 8.6 | 49% → 55% | 1.33 → 1.22 | 0.2 → 1.5 s |
 
 On Lil gug at 8k the front of the face has no seam (only a short loop inside the mouth); on the humanoid the torso and head seams sit on the back and the limb seams on their inner and back sides. Larger meshes take longer: about 7 s at 16k triangles (times on an M-series Mac).
+
+## Hard surface
+
+Organic remeshing smooths everything a little: edges get rounded, corners cut, and quads cross creases at any angle. *Hard surface* (`--surface hard`) keeps them:
+
+1. **Sharp edges and corners.** For each base-mesh vertex, the normals of the faces within a few voxels (or a quarter quad) are summed into a tensor: one dominant direction means a plane, two an edge (it runs along the third), three a corner. Edges are thinned to the vertices where the turn peaks, and each edge point and corner is moved to where planes fitted to the *source* on each side meet, which restores the edge the sculpt and the voxel base mesh rounded off. A corner counts only where three planes meet in a point. Edges turn by more than the *sharp edge* angle (30° by default).
+2. **Fields along them.** The orientation field runs along every edge; a lattice line lies on each edge (it may slide along it) and a lattice point on each corner.
+3. **Vertices on them.** Extraction places each vertex that holds an edge or corner exactly on it; smoothing and the surface fit then leave corners where they are and keep edge vertices on their edge. A quad whose opposite corners both sit on an edge is split along it.
+4. **Small features.** Where two parallel edges are closer than the spacing (a step, a ledge, a plate), the spacing there shrinks to their distance (no finer than 0.6 of the spacing), and the rest of the model coarsens to keep the budget. The curvature term is off: it would refine every edge.
+5. **Shading and seams.** Edges sharper than the angle are hard: normals split there (in the export and the viewport), and UV seams cost a tenth there, so they tend to follow them.
+
+Measured on three hard-surface test models (`--make-test-asset res://test --hard`: a remote, a house, a flashlight), against organic remeshing at the same budget:
+
+| Model | Sharp-edge length along a quad edge, 2k | 8k | Corner to nearest vertex (median) |
+|---|---|---|---|
+| Remote | 38% → 78% | 61% → 84% | 0.2–0.3ρ → 0 |
+| House | 35% → 76% | 62% → 78% | 0.2–0.3ρ → 0–0.05ρ |
+| Flashlight | 32% → 71% | 40% → 51% | 0.2ρ → 0 |
+
+Edges that are still missed are on features smaller than about two voxels or half a quad (the flashlight's grip rings stand out by 0.01 units). `--dump-features` writes the detected edges and corners as an OBJ, `--dump-crease-misses` the source's sharp-edge samples that no quad edge follows.
 
 ## Deformation report: quad vs voxel
 
@@ -210,6 +233,8 @@ The mesh is manifold. UVs are in [0,1]. Weights sum to 1 with at most 4 bones pe
 
 UV layout: no triangle is flipped against its chart. With the built-in unwrapper (the default), rasterizing the layout at the texture size also shows no texel claimed by two triangles, charts at least 2 texels apart, and 95th-percentile area stretch at most 1.6. For xatlas layouts (`--unwrap xatlas`, editor builds) those figures are reported as `[METRIC]` lines, since xatlas occasionally packs a few texels of overlap. Also reported: the number of charts, the total seam length (in model heights) and the shape stretch.
 
+Hard surface (`--surface hard`): at least 45% of the source's sharp-edge length runs along a quad edge, the median distance from it to the remesh is at most 0.1ρ, and the median corner is within 0.1ρ of a vertex. The same figures are reported for organic remeshing as a `[METRIC]` line.
+
 In quad mode:
 - no fallback was used;
 - at least 80% quads (catches broken extraction; uniform spacing typically gives ≥93%, adaptive 83–94%);
@@ -233,6 +258,7 @@ Humanoid rigs additionally:
 ## Limitations
 - Quad-mode faces are roughly square (isotropic), so at 1k triangles a humanoid's limbs get about 5 sides even with adaptive spacing, and fine ridges are approximated more coarsely than voxel mode's long slivers would. Edge loops follow surface curvature, not the skeleton.
 - Features thinner than about one quad, or about two voxels in voxel mode (fingers, ears, horn tips), can merge or disappear.
+- Hard surface is a choice, not detected: telling planes, cylinders and doubly curved organic shapes apart depends too much on scale. Sharp edges smaller than about two voxels or half a quad aren't kept. Knife-thin parts (a roof that tapers to nothing) can tear the remesh in either mode.
 - Parts that are just single-sided surfaces with nothing inside (capes, hair cards) end up as thin closed shells.
 - Weights are automatic only; there's no weight painting. The humanoid template has no finger, eye or jaw bones.
 - No texture baking: colour and surface detail from the source are not transferred. Paint the export in a PBR painter.

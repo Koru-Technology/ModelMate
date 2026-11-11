@@ -36,7 +36,8 @@ public partial class Main : Node3D
     CheckBox _mirror, _heat;
     MenuToggle _faceNegZ, _showSource, _showRetopo, _wire, _showSkel;
     int _texSizeValue = 1024;
-    OptionButton _retopoMode, _spacing, _rigPreset, _parentList, _boneList;
+    OptionButton _retopoMode, _spacing, _rigPreset, _parentList, _boneList, _surface;
+    SpinBox _crease;
     HSlider _rx, _ry, _rz;
     readonly List<Button> _actionButtons = new();
     Button _btnRetopo, _btnFit, _btnCenter, _btnWeights, _btnExport, _btnTestPose, _btnResetPose;
@@ -83,6 +84,11 @@ public partial class Main : Node3D
         {
             string rig = Array.IndexOf(args, "--rig") is int rgi and >= 0 && rgi + 1 < args.Length ? args[rgi + 1] : "humanoid";
             int tris = Array.IndexOf(args, "--tris") is int tri and >= 0 && tri + 1 < args.Length ? int.Parse(args[tri + 1]) : 8000;
+            if (Array.IndexOf(args, "--surface") is int sfi and >= 0 && sfi + 1 < args.Length && args[sfi + 1] == "hard")
+            {
+                _surface.Select(1);
+                _crease.GetParent<Control>().Visible = true;
+            }
             await UiSmoke(args[si + 1], args[si + 2], rig, tris);
             return;
         }
@@ -623,6 +629,11 @@ public partial class Main : Node3D
         v.AddChild(new HSeparator());
         _retopoMode = Option(v, "Mode", new[] { "Quad (recommended)", "Voxel + decimate" });
         _retopoMode.ItemSelected += _ => UpdateVoxelInfo();
+        _surface = Option(v, "Surface", new[] { "Organic", "Hard surface" });
+        _surface.TooltipText = "Hard surface: buildings, gadgets, props. Sharp edges and corners are kept, edge loops run along them and they shade sharp.";
+        _crease = Spin(v, "Sharp edges above (°)", 10, 80, 30, 1);
+        _crease.GetParent<Control>().Visible = false;
+        _surface.ItemSelected += i => _crease.GetParent<Control>().Visible = i == 1;
         _spacing = Option(v, "Spacing (quad mode)", new[] { "Auto (recommended)", "Uniform", "Adaptive" });
         _spacing.TooltipText = "Adaptive spends more quads where the surface curves. Auto builds both and keeps the closer match.";
         if (_touchUi) Hint(v, "Auto builds uniform and adaptive spacing and keeps the closer match.");
@@ -1189,6 +1200,8 @@ public partial class Main : Node3D
         _p.S.TargetTris = (int)_tris.Value;
         _p.S.Mode = _retopoMode.Selected == 0 ? RetopoMode.Quad : RetopoMode.Voxel;
         _p.S.Sizing = _spacing.Selected switch { 1 => "uniform", 2 => "adaptive", _ => "auto" };
+        _p.S.Surface = _surface.Selected == 1 ? "hard" : "organic";
+        _p.S.CreaseAngle = (float)_crease.Value;
         await RunBusy("retopology", async () =>
         {
             int before = _p.Source.Mesh.TriCount;
@@ -1198,6 +1211,8 @@ public partial class Main : Node3D
             _triInfo.Text = $"Triangles: {before:N0} → {_p.Welded.TriCount:N0}";
             if (_p.Quad != null && !_p.UsedFallback)
                 _triInfo.Text += $"\n{_p.Quad.Stats.QuadFraction:P0} quads, {_p.Quad.Stats.Irregular} irregular vertices, {_p.SizingChosen} spacing (median quad size {_p.Quad.Rho:0.####})";
+            if (_p.Quad != null && _p.Features != null && !_p.UsedFallback)
+                _triInfo.Text += $"\nHard surface: {_p.Quad.Locked} vertices on sharp edges and corners, {_p.Quad.CreaseSplits} quads split along an edge";
             Log(_triInfo.Text);
             if (_p.UsedFallback)
             {

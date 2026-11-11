@@ -23,12 +23,15 @@ public static class SizingField
         public float[] Thickness;     // smoothed local thickness (diameter estimate)
         public float Min, Median, Max;
         public bool FloorHit;         // some sizes were raised to the base-mesh resolution floor
+        public float[] Cap;           // per-vertex upper limit that was applied (null = none)
     }
 
     /// <param name="curvature">Weight of the equal-error curvature term (spacing ∝ κ^-½, the rule for constant chord
     /// error); 0 = thickness only. The finer of the thickness and curvature requirements wins at each point.</param>
+    /// <param name="cap">optional per-vertex upper limit on the edge length (hard surface: the size of small features,
+    /// so a step lower than a quad still gets a row of its own); the rest of the surface coarsens to keep the budget</param>
     public static Result Build(MeshData m, int targetQuads, float adaptivity, float floorSize,
-        float maxRatio = 10f, float gradient = 0.3f, Action<string> log = null, float curvature = 0f)
+        float maxRatio = 10f, float gradient = 0.3f, Action<string> log = null, float curvature = 0f, float[] cap = null)
     {
         int n = m.VertexCount;
         if (m.Nrm == null) m.ComputeNormals();
@@ -121,19 +124,42 @@ public static class SizingField
         double k = Math.Sqrt(Count(r) / targetQuads);
         for (int v = 0; v < n; v++) size[v] = (float)(k * r[v]);
         bool floorHit = false;
-        for (int it = 0; it < 6; it++)
+        void Cap()
         {
-            LimitGrowth(m, start, nbr, size, gradient);
-            for (int v = 0; v < n; v++) if (size[v] < floorSize) { size[v] = floorSize; floorHit = true; }
-            double f = Math.Sqrt(Count(size) / targetQuads);
-            for (int v = 0; v < n; v++) size[v] = (float)(size[v] * f);
+            if (cap == null) return;
+            for (int v = 0; v < n; v++) if (cap[v] < size[v]) size[v] = cap[v];
+        }
+        if (cap == null)
+        {
+            for (int it = 0; it < 6; it++)
+            {
+                LimitGrowth(m, start, nbr, size, gradient);
+                for (int v = 0; v < n; v++) if (size[v] < floorSize) { size[v] = floorSize; floorHit = true; }
+                double f = Math.Sqrt(Count(size) / targetQuads);
+                for (int v = 0; v < n; v++) size[v] = (float)(size[v] * f);
+            }
+        }
+        else
+        {
+            var free = (float[])size.Clone();   // the uncapped field, rescaled to absorb what the caps cost
+            for (int it = 0; it < 8; it++)
+            {
+                Array.Copy(free, size, n);
+                Cap();
+                LimitGrowth(m, start, nbr, size, gradient);
+                for (int v = 0; v < n; v++) if (size[v] < floorSize) { size[v] = floorSize; floorHit = true; }
+                double f = Math.Sqrt(Count(size) / targetQuads);
+                for (int v = 0; v < n; v++) free[v] = (float)(free[v] * f);
+            }
+            Array.Copy(free, size, n);
+            Cap();
         }
         LimitGrowth(m, start, nbr, size, gradient);
         for (int v = 0; v < n; v++) size[v] = MathF.Max(size[v], floorSize);
 
         var ss = (float[])size.Clone();
         Array.Sort(ss);
-        var res = new Result { Size = size, Thickness = thick, Min = ss[0], Median = ss[n / 2], Max = ss[^1], FloorHit = floorHit };
+        var res = new Result { Size = size, Thickness = thick, Min = ss[0], Median = ss[n / 2], Max = ss[^1], FloorHit = floorHit, Cap = cap };
         log?.Invoke($"Sizing field: adaptivity {adaptivity}, curvature {curvature}, edge length {res.Min:0.####}–{res.Max:0.####} (median {res.Median:0.####}), " +
                     $"≈{Count(size):F0} quads for a target of {targetQuads}{(floorHit ? "; finest sizes limited by base-mesh resolution" : "")}");
         return res;

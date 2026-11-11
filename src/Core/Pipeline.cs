@@ -40,6 +40,9 @@ public sealed class PipelineSettings
     public float MaxEdgeFrac = 0.04f; // decimation max edge length, fraction of bbox diagonal
     public bool JointAware = true;    // keep more triangles near joints when decimating
     public float RotateY = 0;         // degrees applied to the source on import (e.g. 180 for models facing -Z)
+    /// <summary>"organic" or "hard" (sharp edges and corners kept, edge loops along them, hard edges split normals).</summary>
+    public string Surface = "organic";
+    public float CreaseAngle = 30;    // hard surface: edges whose faces turn more than this are sharp (degrees)
 }
 
 /// <summary>
@@ -72,6 +75,7 @@ public sealed class Pipeline
     public CleanupReport Cleanup;
     public MeshData BaseMesh;         // quad mode: dense voxel base mesh the fields were solved on
     public QuadResult Quad;           // quad mode result (null in voxel mode)
+    public Features Features;         // hard-surface mode: sharp edges and corners of the base mesh (else null)
     public bool UsedFallback;
     public string FallbackReason;
     public string SizingChosen;       // quad mode: which spacing was used ("uniform" / "adaptive")
@@ -141,7 +145,7 @@ public sealed class Pipeline
 
     public void Retopo()
     {
-        Quad = null; BaseMesh = null; UsedFallback = false; FallbackReason = null; SizingChosen = null;
+        Quad = null; BaseMesh = null; UsedFallback = false; FallbackReason = null; SizingChosen = null; Features = null;
         if (S.Mode == RetopoMode.Quad)
         {
             string reason;
@@ -203,11 +207,17 @@ public sealed class Pipeline
         // sharp tips are a property of the surface: detect once (uniform radius) and reuse for every remesh pass
         float rt = rho;
         var tips = QuadRetopo.PinTips ? Timed("tip detection", () => TipDetector.Find(BaseMesh, null, rt)) : null;
+        if (S.Surface == "hard")
+        {
+            float r = MathF.Max(2f * Grid.H, 0.25f * rho), hh = Grid.H;
+            Features = Timed("sharp edges", () => Features.Find(BaseMesh, SourceBvh, r, S.CreaseAngle, 3f * hh));
+            L($"Hard surface: {Features}");
+        }
         QuadResult uni = null, ada = null;
         if (S.Sizing != "adaptive")
         {
             float rq = rho;
-            uni = Timed("quad remesh (uniform)", () => QuadRetopo.Run(BaseMesh, SourceBvh, rq, gd, gw, S.Seed, L, null, tips));
+            uni = Timed("quad remesh (uniform)", () => QuadRetopo.Run(BaseMesh, SourceBvh, rq, gd, gw, S.Seed, L, null, tips, Features));
         }
         if (S.Sizing != "uniform") ada = RunAdaptive(gd, gw, tips);
         if (uni != null && ada != null)
@@ -222,17 +232,39 @@ public sealed class Pipeline
         if (Quad.Failure != null) return Quad.Failure;
         Welded = Quad.Mesh;
         Welded.ComputeNormals();
+        if (Features != null) L($"Hard surface: {Welded.MarkHardEdges(S.CreaseAngle)} hard edges (normals split there)");
         return null;
     }
 
     /// <summary>Quad remesh with the curvature/thickness sizing field, rescaled once if it misses the budget by &gt;4%.</summary>
+    /// <summary>Hard surface: features cap the spacing at no less than this share of the uniform spacing.</summary>
+    public static float MinFeatureFraction = 0.6f;
+
     QuadResult RunAdaptive(Vector3[] gd, float[] gw, List<int> tips)
     {
+        // hard surface: no curvature term (it would refine every sharp edge to the floor); instead, small features
+        // (steps, ledges, plates thinner than a quad) cap the spacing at their own size
+        float[] cap = null;
+        float curv = S.CurvatureSizing;
+        if (Features != null)
+        {
+            curv = 0;
+            float rhoU = MathF.Sqrt((float)(Area(BaseMesh) / S.TargetQuads)), hh = Grid.H;
+            cap = Timed("feature sizes", () => Features.LocalFeatureSize(BaseMesh, 1.5f * rhoU, 2f * hh));
+            // much finer than the spacing costs more quads (and abrupt density changes) than the feature is worth
+            int capped = 0;
+            for (int i = 0; i < cap.Length; i++)
+            {
+                if (cap[i] < rhoU) capped++;
+                cap[i] = MathF.Max(cap[i], MinFeatureFraction * rhoU);
+            }
+            L($"Hard surface: {capped} sharp-edge vertices next to a feature smaller than the spacing");
+        }
         var sf = Timed("sizing field", () => SizingField.Build(BaseMesh, S.TargetQuads, S.Adaptivity, 2.5f * Grid.H,
-            S.SizingMaxRatio, S.SizingGradient, L, S.CurvatureSizing));
+            S.SizingMaxRatio, S.SizingGradient, L, curv, cap));
         var sizing = sf.Size;
         float rhoQ = sf.Median;
-        var q = Timed("quad remesh (adaptive)", () => QuadRetopo.Run(BaseMesh, SourceBvh, rhoQ, gd, gw, S.Seed, L, sizing, tips));
+        var q = Timed("quad remesh (adaptive)", () => QuadRetopo.Run(BaseMesh, SourceBvh, rhoQ, gd, gw, S.Seed, L, sizing, tips, Features));
         // extraction yields more faces where density changes than Σ area/size² predicts
         if (q.Failure == null)
         {
@@ -242,10 +274,14 @@ public sealed class Pipeline
             {
                 float f = MathF.Sqrt(ratio);
                 var s2 = new float[sizing.Length];
-                for (int i = 0; i < s2.Length; i++) s2[i] = MathF.Max(sizing[i] * f, 2.5f * Grid.H);
+                for (int i = 0; i < s2.Length; i++)
+                {
+                    s2[i] = MathF.Max(sizing[i] * f, 2.5f * Grid.H);
+                    if (sf.Cap != null && sf.Cap[i] < s2[i]) s2[i] = MathF.Max(sf.Cap[i], 2.5f * Grid.H);   // small features keep their rows
+                }
                 L($"Budget calibration: {faceEq:F0} quad-equivalents for a target of {S.TargetQuads}; rescaling the sizing field by {f:F3}");
                 float r2 = rhoQ * f;
-                q = Timed("quad remesh (adaptive, calibrated)", () => QuadRetopo.Run(BaseMesh, SourceBvh, r2, gd, gw, S.Seed, L, s2, tips));
+                q = Timed("quad remesh (adaptive, calibrated)", () => QuadRetopo.Run(BaseMesh, SourceBvh, r2, gd, gw, S.Seed, L, s2, tips, Features));
             }
         }
         return q;
@@ -279,6 +315,7 @@ public sealed class Pipeline
         }
         m.ComputeNormals();
         Welded = m;
+        if (S.Surface == "hard") L($"Hard surface: {Welded.MarkHardEdges(S.CreaseAngle)} hard edges (normals split there)");
     }
 
     /// <summary>Per-vertex decimation weight: up to 6x error cost near bending joints.</summary>

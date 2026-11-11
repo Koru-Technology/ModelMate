@@ -55,6 +55,111 @@ public static class TestAsset
         WriteVariant(System.IO.Path.Combine(dir, "humanoid_dense.glb"), open: false, dense: true);
     }
 
+    // ------------------------------------------------------------------ hard-surface models
+
+    /// <summary>
+    /// Hard-surface test models: overlapping primitives with sharp edges (as hard-surface sculpts are made), densely
+    /// tessellated. +Y up, +Z forward. Scale ≈ 1 unit, like the humanoids.
+    /// </summary>
+    public static void WriteHardSurface(string dir)
+    {
+        DirAccess.MakeDirRecursiveAbsolute(dir);
+        foreach (var (name, parts) in new[] { ("hs_gadget", Gadget()), ("hs_building", Building()), ("hs_handheld", Handheld()) })
+            WriteParts(System.IO.Path.Combine(dir, name + ".glb"), parts);
+    }
+
+    static BoxMesh Box(float x, float y, float z, int seg = 40) =>
+        new() { Size = new Vector3(x, y, z), SubdivideWidth = seg, SubdivideHeight = seg, SubdivideDepth = seg };
+
+    static CylinderMesh Cyl(float rTop, float rBottom, float h, int radial = 96, int rings = 24) =>
+        new() { TopRadius = rTop, BottomRadius = rBottom, Height = h, RadialSegments = radial, Rings = rings };
+
+    /// <summary>A remote/phone: slab body, raised screen bezel and screen, round and square buttons, a dial.</summary>
+    static List<(PrimitiveMesh, Transform3D)> Gadget()
+    {
+        var faceZ = new Basis(Vector3.Right, Mathf.Pi / 2);   // cylinder axis Y -> Z (buttons stick out of the front)
+        var l = new List<(PrimitiveMesh, Transform3D)>
+        {
+            (Box(0.42f, 1.20f, 0.14f), new Transform3D(Basis.Identity, new Vector3(0, 0.60f, 0))),
+            (Box(0.34f, 0.46f, 0.03f), new Transform3D(Basis.Identity, new Vector3(0, 0.86f, 0.075f))),   // bezel
+            (Box(0.28f, 0.38f, 0.02f), new Transform3D(Basis.Identity, new Vector3(0, 0.86f, 0.095f))),   // screen
+            (Cyl(0.07f, 0.07f, 0.06f), new Transform3D(faceZ, new Vector3(0, 0.45f, 0.08f))),             // dial
+        };
+        foreach (var x in new[] { -0.11f, 0f, 0.11f })
+            foreach (var y in new[] { 0.16f, 0.28f })
+                l.Add((Cyl(0.035f, 0.035f, 0.04f, 48, 8), new Transform3D(faceZ, new Vector3(x, y, 0.08f))));
+        l.Add((Box(0.08f, 0.05f, 0.04f, 12), new Transform3D(Basis.Identity, new Vector3(-0.12f, 0.45f, 0.075f))));
+        l.Add((Box(0.08f, 0.05f, 0.04f, 12), new Transform3D(Basis.Identity, new Vector3(0.12f, 0.45f, 0.075f))));
+        return l;
+    }
+
+    /// <summary>A small house: block, pitched roof, chimney, door with step, window frames and sills.</summary>
+    static List<(PrimitiveMesh, Transform3D)> Building()
+    {
+        var l = new List<(PrimitiveMesh, Transform3D)>
+        {
+            (Box(1.20f, 0.70f, 0.80f), new Transform3D(Basis.Identity, new Vector3(0, 0.35f, 0))),
+            // roof: a slab (the eaves have a fascia, as real ones do) with the pitched part on top
+            (Box(1.30f, 0.05f, 0.90f), new Transform3D(Basis.Identity, new Vector3(0, 0.725f, 0))),
+            (new PrismMesh { Size = new Vector3(1.30f, 0.42f, 0.90f), SubdivideWidth = 40, SubdivideHeight = 20, SubdivideDepth = 40 },
+                new Transform3D(Basis.Identity, new Vector3(0, 0.96f, 0))),
+            (Box(0.14f, 0.36f, 0.14f), new Transform3D(Basis.Identity, new Vector3(0.36f, 1.07f, 0.05f))),   // chimney
+            (Box(0.22f, 0.38f, 0.04f), new Transform3D(Basis.Identity, new Vector3(0, 0.19f, 0.41f))),       // door
+            (Box(0.34f, 0.04f, 0.14f), new Transform3D(Basis.Identity, new Vector3(0, 0.02f, 0.46f))),       // step
+        };
+        foreach (var x in new[] { -0.38f, 0.38f })
+        {
+            l.Add((Box(0.24f, 0.22f, 0.03f, 16), new Transform3D(Basis.Identity, new Vector3(x, 0.42f, 0.41f))));   // frame
+            l.Add((Box(0.30f, 0.03f, 0.07f, 16), new Transform3D(Basis.Identity, new Vector3(x, 0.30f, 0.43f))));   // sill
+        }
+        return l;
+    }
+
+    /// <summary>A flashlight: tube with grip rings, tapered neck, wide head with lens, box switch.</summary>
+    static List<(PrimitiveMesh, Transform3D)> Handheld()
+    {
+        var l = new List<(PrimitiveMesh, Transform3D)>
+        {
+            (Cyl(0.09f, 0.09f, 0.80f), new Transform3D(Basis.Identity, new Vector3(0, 0.40f, 0))),            // tube
+            (Cyl(0.15f, 0.09f, 0.16f), new Transform3D(Basis.Identity, new Vector3(0, 0.88f, 0))),            // neck (cone)
+            (Cyl(0.15f, 0.15f, 0.14f), new Transform3D(Basis.Identity, new Vector3(0, 1.03f, 0))),            // head
+            (Cyl(0.12f, 0.12f, 0.03f), new Transform3D(Basis.Identity, new Vector3(0, 1.11f, 0))),            // lens
+            (Box(0.06f, 0.12f, 0.06f, 16), new Transform3D(Basis.Identity, new Vector3(0, 0.66f, 0.085f))),   // switch
+            (Cyl(0.10f, 0.10f, 0.03f), new Transform3D(Basis.Identity, new Vector3(0, 0.015f, 0))),           // end cap
+        };
+        foreach (var y in new[] { 0.18f, 0.26f, 0.34f })
+            l.Add((Cyl(0.10f, 0.10f, 0.03f), new Transform3D(Basis.Identity, new Vector3(0, y, 0))));          // grip rings
+        return l;
+    }
+
+    static void WriteParts(string path, List<(PrimitiveMesh m, Transform3D xf)> parts)
+    {
+        var pos = new List<Vector3>(); var nrm = new List<Vector3>(); var idx = new List<int>();
+        foreach (var (m, xf) in parts)
+        {
+            var a = m.GetMeshArrays();
+            var v = a[(int)Mesh.ArrayType.Vertex].AsVector3Array();
+            var n = a[(int)Mesh.ArrayType.Normal].AsVector3Array();
+            var ii = a[(int)Mesh.ArrayType.Index].AsInt32Array();
+            int b = pos.Count;
+            for (int i = 0; i < v.Length; i++) { pos.Add(xf * v[i]); nrm.Add((xf.Basis * n[i]).Normalized()); }
+            foreach (int i in ii) idx.Add(b + i);
+        }
+        var arrays = new Godot.Collections.Array();
+        arrays.Resize((int)Mesh.ArrayType.Max);
+        arrays[(int)Mesh.ArrayType.Vertex] = pos.ToArray();
+        arrays[(int)Mesh.ArrayType.Normal] = nrm.ToArray();
+        arrays[(int)Mesh.ArrayType.Index] = idx.ToArray();
+        var mesh = new ArrayMesh();
+        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        var root = new Node3D { Name = System.IO.Path.GetFileNameWithoutExtension(path) };
+        var mi = new MeshInstance3D { Name = "Body", Mesh = mesh };
+        root.AddChild(mi);
+        mi.Owner = root;
+        Exporter.ExportGlb(root, path);
+        root.Free();
+    }
+
     static List<Part> Parts(bool apose, bool dense, bool lumpy = false)
     {
         var parts = new List<Part>();

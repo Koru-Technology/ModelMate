@@ -81,6 +81,8 @@ public static class SeamCost
                 float len = (m.Pos[a] - m.Pos[b]).Length();
                 float s = 0.05f + 0.5f * (vis[a] + vis[b]);
                 c[3 * t + k] = len * s * s;
+                // a hard edge already splits the normals: seams belong there (painters and bakers want them there)
+                if (m.Hard != null && m.Hard[3 * t + k]) c[3 * t + k] *= 0.1f;
             }
         return c;
     }

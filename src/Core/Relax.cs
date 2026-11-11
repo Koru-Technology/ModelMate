@@ -1,6 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using Godot;
+using ModelMate.Core.Quad;
 
 namespace ModelMate.Core;
 
@@ -10,8 +11,9 @@ public static class Relax
     public struct Stats { public int Snapped, Unsnapped, Reverted; }
 
     /// <param name="adjacency">Optional smoothing neighbourhood (e.g. real quad edges only, so diagonals don't skew quads).</param>
+    /// <param name="locks">optional, per vertex: corners stay where they are, sharp-edge vertices stay on their line</param>
     public static Stats Run(MeshData m, Bvh src, float maxDist, int iterations, float lambda = 0.5f,
-        (int[] start, int[] nbr)? adjacency = null)
+        (int[] start, int[] nbr)? adjacency = null, Extraction.Lock?[] locks = null)
     {
         var stats = new Stats();
         var (start, nbr) = adjacency ?? m.BuildAdjacency();
@@ -48,6 +50,12 @@ public static class Relax
                 }
                 else snappedFlag[v] = false;
             });
+            if (locks != null)
+                for (int v = 0; v < nv; v++)
+                {
+                    if (locks[v] is not Extraction.Lock lk) continue;
+                    next[v] = lk.Dir == Vector3.Zero ? lk.Point : lk.Point + lk.Dir * lk.Dir.Dot(next[v] - lk.Point);
+                }
             m.Pos = next;
 
             // 3) undo moves that flipped a triangle (repeat until stable)
