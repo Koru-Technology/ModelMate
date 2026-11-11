@@ -153,7 +153,7 @@ public static unsafe class IosBridge
     static string Import(string path, bool move = false)
     {
         var ext = Path.GetExtension(path).ToLowerInvariant();
-        if (ext != ".glb" && ext != ".gltf") { Messages.Enqueue($"iOS: ignoring {Path.GetFileName(path)} (not .glb/.gltf)"); return null; }
+        if (ext != ".glb" && ext != ".gltf") { Messages.Enqueue($"Can't open {Path.GetFileName(path)}: ModelMate imports .glb and .gltf models only."); return null; }
         var models = Path.Combine(Documents, "Models");
         Directory.CreateDirectory(models);
         if (Path.GetDirectoryName(Path.GetFullPath(path)) == Path.GetFullPath(models)) return path;   // already ours
